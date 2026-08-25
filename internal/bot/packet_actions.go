@@ -66,7 +66,9 @@ func NewChatAction(writer packetWriter, sourceName, message string) *PacketActio
 
 func NewCommandAction(writer packetWriter, command string) *PacketAction {
 	command = strings.TrimSpace(command)
-	command = strings.TrimPrefix(command, "/")
+	if !strings.HasPrefix(command, "/") {
+		command = "/" + command
+	}
 	return NewPacketAction("command", writer, func() packet.Packet {
 		return &packet.CommandRequest{
 			CommandLine: command,
