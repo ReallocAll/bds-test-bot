@@ -35,6 +35,7 @@ type inputControl struct {
 type playerState struct {
 	mu                sync.Mutex
 	position          mgl32.Vec3
+	positionReady     bool
 	pitch             float32
 	yaw               float32
 	headYaw           float32
@@ -61,14 +62,27 @@ type authInputSnapshot struct {
 	verticalDirection float32
 }
 
+func validPlayerPositionY(y float32) bool {
+	return y >= chunkFlyValidMinY && y <= chunkFlyValidMaxY
+}
+
 func newPlayerState(position mgl32.Vec3, pitch, yaw float32) *playerState {
-	return &playerState{position: position, pitch: pitch, yaw: yaw, headYaw: yaw}
+	return &playerState{
+		position:      position,
+		positionReady: validPlayerPositionY(position[1]),
+		pitch:         pitch,
+		yaw:           yaw,
+		headYaw:       yaw,
+	}
 }
 
 func (s *playerState) update(position mgl32.Vec3, pitch, yaw, headYaw float32, teleport bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.position = position
+	if validPlayerPositionY(position[1]) {
+		s.positionReady = true
+	}
 	s.pitch = pitch
 	s.yaw = yaw
 	s.headYaw = headYaw
@@ -82,10 +96,30 @@ func (s *playerState) correct(position mgl32.Vec3, pitch, yaw, headYaw float32) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.position = position
+	if validPlayerPositionY(position[1]) {
+		s.positionReady = true
+	}
 	s.pitch = pitch
 	s.yaw = yaw
 	s.headYaw = headYaw
 	s.serverCorrections++
+}
+
+func (s *playerState) acceptPublisherPosition(position mgl32.Vec3) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.positionReady || !validPlayerPositionY(position[1]) {
+		return false
+	}
+	s.position = position
+	s.positionReady = true
+	return true
+}
+
+func (s *playerState) positionReadySnapshot() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.positionReady
 }
 
 func (s *playerState) syncServerTick(serverTick uint64) {
@@ -193,10 +227,10 @@ func (s *playerState) inputSnapshot() authInputSnapshot {
 	if snapshot.handledTeleport {
 		snapshot.moveVector = mgl32.Vec2{}
 	} else if s.control.fly {
-		if !s.flyingConfirmed {
-			// Do not predict movement until the server has acknowledged creative
-			// flight through UpdateAbilities. This prevents the local position
-			// from racing ahead while BDS still considers the player grounded.
+		if !s.flyingConfirmed || !s.positionReady {
+			// StartGame may contain the Bedrock placeholder altitude around
+			// Y=32768. Do not fabricate movement from it. Wait until BDS has
+			// acknowledged flying and published a stable authoritative position.
 			snapshot.moveVector = mgl32.Vec2{}
 		} else {
 			diff := s.control.flightTargetY - s.position[1]
@@ -258,9 +292,6 @@ func scenarioHeading(baseYaw float32, index, count int) float32 {
 func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 	snapshot := s.inputSnapshot()
 	flags := protocol.NewInputFlags(packet.InputFlagCount)
-	// A normal Bedrock client sends this baseline flag every tick. Keeping it
-	// present makes the synthetic input stream conform to the server-authoritative
-	// movement path instead of looking like a hand-built partial packet.
 	flags.Set(packet.InputFlagBlockBreakingDelayEnabled)
 	if snapshot.handledTeleport {
 		flags.Set(packet.InputFlagHandledTeleport)
