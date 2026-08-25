@@ -112,12 +112,11 @@ func (s *playerState) acceptPublisherPosition(position mgl32.Vec3) bool {
 		return false
 	}
 	// StartGame may contain a temporary Y≈32768 position while BDS already
-	// publishes the actual player location. Treat the first stable publisher
-	// position as the completion of that initial server teleport and acknowledge
-	// it in the next PlayerAuthInput before predicting any movement.
+	// publishes the actual player location. NetworkChunkPublisherUpdate is not a
+	// teleport packet, so use it only to seed prediction history. Emitting a
+	// synthetic HandledTeleport here can acknowledge a teleport BDS never sent.
 	s.position = position
 	s.positionReady = true
-	s.handledTeleport = true
 	return true
 }
 

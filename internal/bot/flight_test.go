@@ -48,7 +48,7 @@ func TestChunkFlyRequestsServerAbilityBeforePredictingMovement(t *testing.T) {
 	}
 }
 
-func TestChunkFlyAcknowledgesPublisherSpawnBeforeHorizontalPrediction(t *testing.T) {
+func TestChunkFlySeedsPublisherWithoutSyntheticTeleportAck(t *testing.T) {
 	state := newPlayerState(mgl32.Vec3{12.5, 32769.625, -7.5}, 0, 0)
 	writer := &recordingPacketWriter{}
 	fly := NewChunkFlyAction(state, writer, 0)
@@ -68,26 +68,18 @@ func TestChunkFlyAcknowledgesPublisherSpawnBeforeHorizontalPrediction(t *testing
 	if !state.acceptPublisherPosition(publisherPosition) {
 		t.Fatal("stable server publisher position was not accepted")
 	}
-	ack := authInputPacket(state, 2)
-	if !ack.InputData.Load(packet.InputFlagHandledTeleport) || !ack.InputData.Load(packet.InputFlagStartFlying) {
-		t.Fatalf("publisher spawn acknowledgement flags = %+v", ack.InputData)
+	input := authInputPacket(state, 2)
+	if input.InputData.Load(packet.InputFlagHandledTeleport) {
+		t.Fatalf("chunk publisher must not synthesize HandledTeleport: %+v", input.InputData)
 	}
-	if ack.Position != publisherPosition || ack.MoveVector != (mgl32.Vec2{}) || ack.Delta != (mgl32.Vec3{}) {
-		t.Fatalf("publisher spawn acknowledgement must be stationary: %+v", ack)
+	if !input.InputData.Load(packet.InputFlagStartFlying) {
+		t.Fatal("publisher-seeded flight must keep StartFlying asserted")
 	}
-
-	cruise := authInputPacket(state, 3)
-	if cruise.InputData.Load(packet.InputFlagHandledTeleport) {
-		t.Fatal("HandledTeleport must only be sent for the acknowledgement frame")
+	if input.MoveVector != (mgl32.Vec2{0, 1}) || input.Delta[2] <= 0 || input.Delta[1] != 0 {
+		t.Fatalf("publisher-seeded horizontal prediction = move %v delta %v", input.MoveVector, input.Delta)
 	}
-	if cruise.InputData.Load(packet.InputFlagAscend) || cruise.InputData.Load(packet.InputFlagWantUp) {
-		t.Fatalf("horizontal-only diagnostic unexpectedly requested ascent: %+v", cruise.InputData)
-	}
-	if cruise.MoveVector != (mgl32.Vec2{0, 1}) || cruise.Delta[2] <= 0 || cruise.Delta[1] != 0 {
-		t.Fatalf("horizontal prediction = move %v delta %v", cruise.MoveVector, cruise.Delta)
-	}
-	if cruise.Position[1] != publisherPosition[1] {
-		t.Fatalf("horizontal diagnostic changed altitude: %v", cruise.Position)
+	if input.Position[1] != publisherPosition[1] {
+		t.Fatalf("horizontal diagnostic changed altitude: %v", input.Position)
 	}
 }
 
