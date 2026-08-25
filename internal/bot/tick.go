@@ -41,6 +41,8 @@ type playerState struct {
 	handledTeleport   bool
 	flyingConfirmed   bool
 	serverCorrections uint64
+	serverTick        uint64
+	tickSynced        bool
 	control           inputControl
 }
 
@@ -84,6 +86,33 @@ func (s *playerState) correct(position mgl32.Vec3, pitch, yaw, headYaw float32) 
 	s.yaw = yaw
 	s.headYaw = headYaw
 	s.serverCorrections++
+}
+
+func (s *playerState) syncServerTick(serverTick uint64) {
+	if serverTick == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := serverTick + 1
+	if !s.tickSynced || next > s.serverTick {
+		s.serverTick = next
+		s.tickSynced = true
+	}
+}
+
+func (s *playerState) nextInputTick() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tick := s.serverTick
+	s.serverTick++
+	return tick
+}
+
+func (s *playerState) tickSnapshot() (uint64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.serverTick, s.tickSynced
 }
 
 func (s *playerState) setIdleControl() {
@@ -229,6 +258,10 @@ func scenarioHeading(baseYaw float32, index, count int) float32 {
 func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 	snapshot := s.inputSnapshot()
 	flags := protocol.NewInputFlags(packet.InputFlagCount)
+	// A normal Bedrock client sends this baseline flag every tick. Keeping it
+	// present makes the synthetic input stream conform to the server-authoritative
+	// movement path instead of looking like a hand-built partial packet.
+	flags.Set(packet.InputFlagBlockBreakingDelayEnabled)
 	if snapshot.handledTeleport {
 		flags.Set(packet.InputFlagHandledTeleport)
 	}
@@ -286,7 +319,7 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 		HeadYaw:            snapshot.headYaw,
 		InputData:          flags,
 		InputMode:          packet.InputModeMouse,
-		PlayMode:           packet.PlayModeScreen,
+		PlayMode:           packet.PlayModeNormal,
 		InteractionModel:   packet.InteractionModelCrosshair,
 		InteractPitch:      snapshot.pitch,
 		InteractYaw:        snapshot.yaw,
@@ -311,13 +344,12 @@ func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, c
 		return err
 	}
 
-	var tick uint64
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			tick++
+			tick := state.nextInputTick()
 			if err := runner.Tick(ctx, action.TickContext{Tick: tick}); err != nil {
 				return err
 			}
