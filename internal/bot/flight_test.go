@@ -39,6 +39,12 @@ func TestChunkFlyRequestsServerAbilityBeforePredictingMovement(t *testing.T) {
 	if !input.InputData.Load(packet.InputFlagStartFlying) {
 		t.Fatal("unacknowledged flight input must request StartFlying")
 	}
+	if !input.InputData.Load(packet.InputFlagBlockBreakingDelayEnabled) {
+		t.Fatal("auth input must include the normal Bedrock block-breaking-delay baseline flag")
+	}
+	if input.PlayMode != packet.PlayModeNormal {
+		t.Fatalf("play mode = %d, want normal", input.PlayMode)
+	}
 	if input.MoveVector != (mgl32.Vec2{}) || input.Delta != (mgl32.Vec3{}) {
 		t.Fatalf("movement predicted before server flight acknowledgement: %+v", input)
 	}
@@ -132,6 +138,25 @@ func TestChunkFlyResumesFromServerCorrection(t *testing.T) {
 	_, _, corrections := state.telemetrySnapshot()
 	if corrections != 1 {
 		t.Fatalf("server corrections = %d, want 1", corrections)
+	}
+}
+
+func TestServerTickSyncDrivesNextAuthInputTick(t *testing.T) {
+	state := newPlayerState(mgl32.Vec3{}, 0, 0)
+	if got := state.nextInputTick(); got != 0 {
+		t.Fatalf("initial input tick = %d, want 0", got)
+	}
+	state.syncServerTick(240)
+	next, synced := state.tickSnapshot()
+	if !synced || next != 241 {
+		t.Fatalf("tick sync = next %d synced %v, want 241 true", next, synced)
+	}
+	if got := state.nextInputTick(); got != 241 {
+		t.Fatalf("post-sync input tick = %d, want 241", got)
+	}
+	state.syncServerTick(200)
+	if got := state.nextInputTick(); got != 242 {
+		t.Fatalf("stale server tick moved input clock backwards: %d", got)
 	}
 }
 
