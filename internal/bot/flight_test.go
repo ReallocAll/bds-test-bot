@@ -49,7 +49,7 @@ func TestChunkFlyRequestsServerAbilityBeforePredictingMovement(t *testing.T) {
 	}
 }
 
-func TestChunkFlyWaitsForAuthoritativePublisherPosition(t *testing.T) {
+func TestChunkFlyAcknowledgesPublisherSpawnBeforeMovement(t *testing.T) {
 	state := newPlayerState(mgl32.Vec3{12.5, 32769.625, -7.5}, 0, 0)
 	writer := &recordingPacketWriter{}
 	fly := NewChunkFlyAction(state, writer, 0)
@@ -62,13 +62,6 @@ func TestChunkFlyWaitsForAuthoritativePublisherPosition(t *testing.T) {
 	if err := fly.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(writer.packets) != 1 {
-		t.Fatalf("startup packets = %d, want only flying request", len(writer.packets))
-	}
-	if request, ok := writer.packets[0].(*packet.RequestAbility); !ok || request.Ability != packet.AbilityFlying {
-		t.Fatalf("startup packet = %#v, want flying request", writer.packets[0])
-	}
-
 	state.setFlyingConfirmed(true)
 	blocked := authInputPacket(state, 1)
 	if blocked.MoveVector != (mgl32.Vec2{}) || blocked.Delta != (mgl32.Vec3{}) {
@@ -82,29 +75,29 @@ func TestChunkFlyWaitsForAuthoritativePublisherPosition(t *testing.T) {
 	if !state.positionReadySnapshot() {
 		t.Fatal("publisher position did not make movement position-ready")
 	}
-	climb := authInputPacket(state, 2)
-	if !climb.InputData.Load(packet.InputFlagAscend) || !climb.InputData.Load(packet.InputFlagWantUp) {
-		t.Fatalf("publisher-driven climb missing ascent flags: %+v", climb.InputData)
+	ack := authInputPacket(state, 2)
+	if !ack.InputData.Load(packet.InputFlagHandledTeleport) {
+		t.Fatalf("publisher spawn acknowledgement missing HandledTeleport: %+v", ack.InputData)
 	}
-	if climb.Delta != (mgl32.Vec3{}) || climb.MoveVector != (mgl32.Vec2{}) {
-		t.Fatalf("publisher-driven climb must not invent client movement: %+v", climb)
+	if !ack.InputData.Load(packet.InputFlagStartFlying) {
+		t.Fatal("publisher spawn acknowledgement must keep flying asserted")
 	}
-	if !climb.InputData.Load(packet.InputFlagStartFlying) {
-		t.Fatal("confirmed publisher-driven flight must keep the flying input asserted")
+	if ack.Position != publisherPosition || ack.MoveVector != (mgl32.Vec2{}) || ack.Delta != (mgl32.Vec3{}) {
+		t.Fatalf("publisher spawn acknowledgement must be stationary at authoritative position: %+v", ack)
 	}
 
-	if !state.acceptPublisherPosition(mgl32.Vec3{12.5, fly.targetY, -7.5}) {
-		t.Fatal("later stable publisher height was not accepted")
+	climb := authInputPacket(state, 3)
+	if climb.InputData.Load(packet.InputFlagHandledTeleport) {
+		t.Fatal("HandledTeleport must only be sent for the acknowledgement frame")
 	}
-	cruise := authInputPacket(state, 3)
-	if cruise.MoveVector != (mgl32.Vec2{0, 1}) {
-		t.Fatalf("publisher-driven cruise move vector = %v", cruise.MoveVector)
+	if !climb.InputData.Load(packet.InputFlagAscend) || !climb.InputData.Load(packet.InputFlagWantUp) {
+		t.Fatalf("post-ack climb missing ascent flags: %+v", climb.InputData)
 	}
-	if cruise.Delta != (mgl32.Vec3{}) {
-		t.Fatalf("publisher-driven cruise must not invent a client delta: %v", cruise.Delta)
+	if climb.Delta[1] <= 0 || climb.MoveVector != (mgl32.Vec2{}) {
+		t.Fatalf("post-ack climb did not resume prediction: %+v", climb)
 	}
-	if cruise.Position != (mgl32.Vec3{12.5, fly.targetY, -7.5}) {
-		t.Fatalf("publisher-driven cruise changed server-owned position: %v", cruise.Position)
+	if state.acceptPublisherPosition(mgl32.Vec3{12.5, fly.targetY, -7.5}) {
+		t.Fatal("publisher seeding must not overwrite an already-ready predicted position")
 	}
 }
 
