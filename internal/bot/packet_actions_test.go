@@ -49,7 +49,7 @@ func TestChatActionWritesTextPacket(t *testing.T) {
 			t.Fatalf("packet was emitted more than once: %d", len(writer.packets))
 		}
 	}
-	finalTick := packetActionCooldownTicks + 1
+	finalTick := uint64(packetActionCooldownTicks + 1)
 	if err := a.Tick(context.Background(), action.TickContext{Tick: finalTick}); err != nil {
 		t.Fatal(err)
 	}
