@@ -68,6 +68,13 @@ func (a *FlyAction) Start(context.Context) error {
 		if err := a.requestAltitudeReset(); err != nil {
 			return err
 		}
+		// StartGame may carry the Bedrock placeholder altitude around Y=32768
+		// before the server has established the real player position. The
+		// one-shot /tp above is the server-authoritative reset; immediately
+		// rebasing the local prediction to the same requested Y prevents the
+		// 20 TPS AuthInput stream from spending minutes descending from the
+		// placeholder and racing the server's teleport result.
+		a.state.rebaseAltitude(a.targetY)
 	}
 	return a.requestFlight()
 }
@@ -130,6 +137,12 @@ func (s *playerState) setFlightControl(vector mgl32.Vec2, stepPerTick, yaw, targ
 	s.control.flightTargetY = targetY
 	s.control.verticalStep = verticalStep
 	s.control.jump = false
+}
+
+func (s *playerState) rebaseAltitude(y float32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.position[1] = y
 }
 
 func (s *playerState) setFlyingConfirmed(flying bool) bool {
