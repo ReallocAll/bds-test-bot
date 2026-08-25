@@ -10,11 +10,14 @@ import (
 )
 
 const (
-	ActionIdle = "idle"
-	ActionWait = "wait"
-	ActionMove = "move"
-	ActionLook = "look"
-	ActionJump = "jump"
+	ActionIdle    = "idle"
+	ActionWait    = "wait"
+	ActionMove    = "move"
+	ActionLook    = "look"
+	ActionJump    = "jump"
+	ActionChat    = "chat"
+	ActionCommand = "command"
+	ActionSwing   = "swing"
 )
 
 // Step describes one action invocation in a scenario.
@@ -27,6 +30,8 @@ type Step struct {
 	Speed   float32  `json:"speed,omitempty" yaml:"speed,omitempty"`
 	Yaw     *float32 `json:"yaw,omitempty" yaml:"yaw,omitempty"`
 	Pitch   *float32 `json:"pitch,omitempty" yaml:"pitch,omitempty"`
+	Message string   `json:"message,omitempty" yaml:"message,omitempty"`
+	Command string   `json:"command,omitempty" yaml:"command,omitempty"`
 }
 
 // Scenario is a deterministic action sequence loaded from JSON or YAML.
@@ -111,6 +116,15 @@ func validateStep(index int, step Step) error {
 		if step.Ticks <= 0 {
 			return fmt.Errorf("step %d jump requires ticks > 0", index)
 		}
+	case ActionChat:
+		if strings.TrimSpace(step.Message) == "" {
+			return fmt.Errorf("step %d chat requires message", index)
+		}
+	case ActionCommand:
+		if strings.TrimSpace(step.Command) == "" {
+			return fmt.Errorf("step %d command requires command", index)
+		}
+	case ActionSwing:
 	default:
 		return fmt.Errorf("step %d unsupported action %q", index, step.Action)
 	}
