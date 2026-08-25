@@ -1,15 +1,28 @@
 # bds-test-bot
 
-Minimal headless Minecraft Bedrock client for BDS integration testing.
+`bds-test-bot` is a minimal headless Minecraft Bedrock network client for BDS and Endstone integration tests. It connects through the real Bedrock/RakNet protocol, completes the normal gophertunnel login/spawn sequence, requests chunks, sends a stationary `PlayerAuthInput` every client tick, and remains online until terminated.
+
+v0.1 intentionally targets offline/LAN-style test servers. It is not a FakePlayer implementation, gameplay bot, pathfinder, or Xbox automation client.
+
+## Protocol baseline
+
+v0.1 uses [`github.com/sandertv/gophertunnel`](https://github.com/Sandertv/gophertunnel) v1.59.0 and Go 1.25. gophertunnel v1.59.0 targets the current Bedrock 1.26.40 protocol generation (protocol 2168).
+
+The bot leaves `minecraft.Dialer.TokenSource` unset and supplies only offline identity data, so BDS must have online authentication disabled.
 
 ## Current capabilities
 
-- RakNet connection through `github.com/sandertv/gophertunnel`
-- Login and spawn handshake
-- Chunk radius request
-- Chunk streaming observation
-- JSON Lines events
-- Graceful shutdown on SIGINT/SIGTERM
+- RakNet/Bedrock connection and offline login.
+- Normal gophertunnel resource-pack and spawn handshake.
+- Configurable chunk-radius request, default `8`.
+- `LevelChunk` reception with counters.
+- Stationary `PlayerAuthInput` at 20 ticks/s using the current gophertunnel packet layout.
+- Server movement/teleport correction tracking.
+- Human-readable logs or JSON Lines for CI.
+- Connect and spawn/world timeouts.
+- Clean SIGINT/SIGTERM shutdown.
+
+`online` is emitted only after spawn completed, a `ChunkRadiusUpdated` packet was received, and at least one `LevelChunk` was received.
 
 ## Build
 
@@ -17,30 +30,96 @@ Minimal headless Minecraft Bedrock client for BDS integration testing.
 go build ./cmd/bds-test-bot
 ```
 
-## Run
+GitHub Actions builds and tests Linux and Windows and publishes these workflow artifacts:
+
+- `bds-test-bot-linux-amd64`
+- `bds-test-bot-windows-amd64`
+
+## Quick start
 
 ```bash
-./bds-test-bot --host 127.0.0.1 --port 19132 --name TestBot
+./bds-test-bot \
+  --host 127.0.0.1 \
+  --port 19132 \
+  --name TestBot \
+  --chunk-radius 8
 ```
 
-JSON output:
+Useful CI options:
 
-```bash
-./bds-test-bot --json
+```text
+--json
+--connect-timeout 15s
+--spawn-timeout 30s
 ```
 
-## Test server
+Defaults are:
 
-Recommended BDS integration test settings:
+```text
+host            127.0.0.1
+port            19132
+name            TestBot
+chunk radius    8
+connect timeout 15s
+spawn timeout   30s
+```
+
+## JSONL events
+
+With `--json`, stdout contains one JSON object per line. Typical startup output is:
+
+```json
+{"address":"127.0.0.1:19132","event":"connecting","name":"TestBot"}
+{"event":"connected"}
+{"event":"start_game"}
+{"event":"spawned","x":0.5,"y":64,"z":0.5}
+{"event":"chunk_radius_requested","radius":8}
+{"event":"chunk_radius","radius":8}
+{"event":"chunk_received","total":1,"x":0,"z":0}
+{"chunks_received":1,"event":"online","packets_received":12,"uptime":"1.2s"}
+```
+
+Errors are also machine-readable:
+
+```json
+{"event":"error","message":"...","stage":"spawn"}
+```
+
+## Recommended BDS test profile
+
+`bds-test-bot` does not modify `server.properties`. The test harness should configure BDS. A suitable v0.1 profile is:
 
 ```properties
 online-mode=false
 allow-list=false
 player-idle-timeout=0
+
+gamemode=creative
+force-gamemode=true
+difficulty=peaceful
+allow-cheats=true
+default-player-permission-level=operator
+
 view-distance=8
 tick-distance=4
+client-side-chunk-generation-enabled=false
 ```
 
-## Limitations
+The critical settings for the MVP are `online-mode=false` and `player-idle-timeout=0`.
 
-v0.1 is a protocol test client, not a gameplay bot. It does not implement movement, inventory, combat, or world simulation.
+## Exit codes
+
+| Code | Meaning |
+| ---: | --- |
+| 0 | Normal termination, including SIGINT/SIGTERM |
+| 1 | General runtime/network error after connection |
+| 2 | Invalid CLI arguments |
+| 3 | Connect/login failure or timeout |
+| 4 | Spawn/world readiness failure or timeout |
+
+## Current limitations
+
+- Offline/LAN test mode only; no Microsoft/Xbox OAuth flow in v0.1.
+- No movement, pathfinding, combat, inventory, block interaction, crafting, or world database.
+- Chunk payloads are not decoded into a world representation.
+- One bot process represents one player; multi-bot load generation is out of scope for v0.1.

@@ -1,5 +1,8 @@
 module github.com/ReallocAll/bds-test-bot
 
-go 1.24.0
+go 1.25.0
 
-require github.com/sandertv/gophertunnel v1.58.1
+require (
+	github.com/go-gl/mathgl v1.1.0
+	github.com/sandertv/gophertunnel v1.59.0
+)
