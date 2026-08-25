@@ -291,6 +291,9 @@ func runInstance(
 					}
 				}
 			}
+			if cfg.Scenario == ScenarioChunkFly {
+				state.observePublisherPosition(publisherEyePosition(p.Position))
+			}
 			publisherX, publisherY, publisherZ = x, y, z
 			publisherChunkX, publisherChunkZ = chunkX, chunkZ
 			publisherSet = true
