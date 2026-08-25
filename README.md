@@ -6,7 +6,7 @@ v0.1 intentionally targets offline/LAN-style test servers. It is not a FakePlaye
 
 ## Protocol baseline
 
-v0.1 uses [`github.com/sandertv/gophertunnel`](https://github.com/Sandertv/gophertunnel) v1.59.0 and Go 1.25. gophertunnel v1.59.0 targets the current Bedrock 1.26.40 protocol generation (protocol 2168).
+v0.1 uses Go 1.25 and pins [`github.com/sandertv/gophertunnel`](https://github.com/Sandertv/gophertunnel) to upstream commit `7f058e5ddc393eaa0480dae338c5eee2feb323e6` (`Updated for 1.26.45`). That commit reports Minecraft Bedrock `1.26.45` and protocol `2169`. The commit pin is intentional because current BDS protocol support landed after the latest gophertunnel tag.
 
 The bot leaves `minecraft.Dialer.TokenSource` unset and supplies only offline identity data, so BDS must have online authentication disabled.
 
