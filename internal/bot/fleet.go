@@ -88,11 +88,11 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 	recordOnline := func(stats InstanceStats) error {
 		onlineCount++
 		return out.Emit("fleet_progress", map[string]any{
-			"online":          onlineCount,
-			"count":           cfg.Count,
-			"bot":             stats.Name,
-			"index":           stats.Index,
-			"chunks_received": stats.ChunksReceived,
+			"online":           onlineCount,
+			"count":            cfg.Count,
+			"bot":              stats.Name,
+			"index":            stats.Index,
+			"chunks_received":  stats.ChunksReceived,
 			"auth_inputs_sent": stats.AuthInputsSent,
 		})
 	}
