@@ -67,12 +67,12 @@ func TestChatActionWritesTextPacket(t *testing.T) {
 
 func TestCommandActionEncodesPlayerOrigin(t *testing.T) {
 	writer := &recordingPacketWriter{}
-	a := NewCommandAction(writer, "/list", 42)
+	a := NewCommandAction(writer, "/list")
 	if err := a.Tick(context.Background(), action.TickContext{Tick: 1}); err != nil {
 		t.Fatal(err)
 	}
 	pk := writer.packets[0].(*packet.CommandRequest)
-	if pk.CommandLine != "list" || pk.CommandOrigin.Origin != protocol.CommandOriginPlayer || pk.CommandOrigin.PlayerUniqueID != 42 || pk.CommandOrigin.UUID == uuid.Nil {
+	if pk.CommandLine != "list" || pk.CommandOrigin.Origin != protocol.CommandOriginPlayer || pk.CommandOrigin.PlayerUniqueID != 0 || pk.CommandOrigin.UUID == uuid.Nil {
 		t.Fatalf("unexpected command packet: %+v", pk)
 	}
 }
