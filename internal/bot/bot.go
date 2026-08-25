@@ -212,6 +212,9 @@ func runInstance(
 	onlineState := false
 	nextProgress := time.Now().Add(5 * time.Second)
 	var publisherUpdates uint64
+	var postMoveUpdates uint64
+	var postMoveX, postMoveY, postMoveZ float32
+	postMoveSet := false
 	var publisherX, publisherY, publisherZ int32
 	var publisherChunkX, publisherChunkZ int32
 	publisherSet := false
@@ -295,6 +298,18 @@ func runInstance(
 					return stageError(ExitRuntime, "output", err)
 				}
 			}
+		case *packet.ServerPlayerPostMovePosition:
+			postMoveUpdates++
+			postMoveX, postMoveY, postMoveZ = p.Position[0], p.Position[1], p.Position[2]
+			postMoveSet = true
+			if cfg.Scenario == ScenarioChunkFly && (postMoveUpdates <= 3 || postMoveUpdates%100 == 0) {
+				if err := out.Emit("server_post_move", map[string]any{
+					"position": []float32{postMoveX, postMoveY, postMoveZ},
+					"updates":  postMoveUpdates,
+				}); err != nil {
+					return stageError(ExitRuntime, "output", err)
+				}
+			}
 		case *packet.MovePlayer:
 			if p.EntityRuntimeID == game.EntityRuntimeID {
 				state.update(p.Position, p.Pitch, p.Yaw, p.HeadYaw, p.Mode == packet.MoveModeTeleport)
@@ -372,19 +387,23 @@ func runInstance(
 			positionReady := state.positionReadySnapshot()
 			spanX, spanZ := stats.chunkSpan()
 			fields := map[string]any{
-				"position":             []float32{position[0], position[1], position[2]},
-				"position_ready":       positionReady,
-				"horizontal_distance":  horizontalDistance(stats.StartPosition, position),
-				"flying_confirmed":     flying,
-				"server_corrections":   corrections,
-				"chunks_received":      stats.ChunksReceived,
-				"chunk_span_x":         spanX,
-				"chunk_span_z":         spanZ,
-				"auth_inputs_sent":     authInputs.Load(),
-				"movement_inputs_sent": movementInputs.Load(),
-				"next_input_tick":      nextInputTick,
-				"tick_synced":          tickSynced,
-				"publisher_updates":    publisherUpdates,
+				"position":                 []float32{position[0], position[1], position[2]},
+				"position_ready":           positionReady,
+				"horizontal_distance":      horizontalDistance(stats.StartPosition, position),
+				"flying_confirmed":         flying,
+				"server_corrections":       corrections,
+				"chunks_received":          stats.ChunksReceived,
+				"chunk_span_x":             spanX,
+				"chunk_span_z":             spanZ,
+				"auth_inputs_sent":         authInputs.Load(),
+				"movement_inputs_sent":     movementInputs.Load(),
+				"next_input_tick":          nextInputTick,
+				"tick_synced":              tickSynced,
+				"publisher_updates":        publisherUpdates,
+				"server_post_move_updates": postMoveUpdates,
+			}
+			if postMoveSet {
+				fields["server_post_move_position"] = []float32{postMoveX, postMoveY, postMoveZ}
 			}
 			if publisherSet {
 				fields["publisher_position"] = []int32{publisherX, publisherY, publisherZ}
