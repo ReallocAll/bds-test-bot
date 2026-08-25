@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"math"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -40,6 +41,37 @@ func TestChunkFlyRequestsServerAbilityBeforePredictingMovement(t *testing.T) {
 	}
 	if input.MoveVector != (mgl32.Vec2{}) || input.Delta != (mgl32.Vec3{}) {
 		t.Fatalf("movement predicted before server flight acknowledgement: %+v", input)
+	}
+}
+
+func TestChunkFlyResetsOutOfRangeSpawnAltitude(t *testing.T) {
+	state := newPlayerState(mgl32.Vec3{12, 32769.625, -8}, 0, 0)
+	writer := &recordingPacketWriter{}
+	fly := NewChunkFlyAction(state, writer, 0)
+	if !fly.resetAltitude {
+		t.Fatal("out-of-range spawn altitude must request a server-authoritative reset")
+	}
+	if fly.targetY != chunkFlyMaximumAltitude {
+		t.Fatalf("target altitude = %f, want %f", fly.targetY, chunkFlyMaximumAltitude)
+	}
+	if err := fly.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(writer.packets) != 2 {
+		t.Fatalf("startup packets = %d, want teleport + flight request", len(writer.packets))
+	}
+	command, ok := writer.packets[0].(*packet.CommandRequest)
+	if !ok {
+		t.Fatalf("altitude reset packet type = %T", writer.packets[0])
+	}
+	if !strings.Contains(command.CommandLine, "tp @s ~ 256 ~") {
+		t.Fatalf("altitude reset command = %q", command.CommandLine)
+	}
+	if command.CommandOrigin.Origin != protocol.CommandOriginPlayer || command.Version != "latest" {
+		t.Fatalf("unexpected altitude reset command metadata: %+v", command)
+	}
+	if request, ok := writer.packets[1].(*packet.RequestAbility); !ok || request.Ability != packet.AbilityFlying {
+		t.Fatalf("second startup packet = %#v, want flying request", writer.packets[1])
 	}
 }
 
