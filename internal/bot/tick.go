@@ -216,11 +216,11 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 	}
 }
 
-func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, cfg Config, headingYaw float32) error {
+func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, cfg Config, headingYaw float32, botName string, entityRuntimeID uint64) error {
 	ticker := time.NewTicker(time.Second / 20)
 	defer ticker.Stop()
 
-	scenarioAction, err := newScenarioAction(cfg, state, headingYaw)
+	scenarioAction, err := newScenarioAction(cfg, state, headingYaw, writer, botName, entityRuntimeID)
 	if err != nil {
 		return err
 	}
