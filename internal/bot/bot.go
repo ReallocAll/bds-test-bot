@@ -309,6 +309,22 @@ func runInstance(
 			if p.EntityRuntimeID == game.EntityRuntimeID {
 				state.syncServerTick(p.Tick)
 			}
+		case *packet.SetActorData:
+			if p.EntityRuntimeID == game.EntityRuntimeID {
+				state.syncServerTick(p.Tick)
+			}
+		case *packet.SetActorMotion:
+			if p.EntityRuntimeID == game.EntityRuntimeID {
+				state.syncServerTick(p.Tick)
+			}
+		case *packet.MobEffect:
+			if p.EntityRuntimeID == game.EntityRuntimeID {
+				state.syncServerTick(p.Tick)
+			}
+		case *packet.UpdatePlayerGameType:
+			if p.PlayerUniqueID == game.EntityUniqueID {
+				state.syncServerTick(p.Tick)
+			}
 		case *packet.UpdateAbilities:
 			if cfg.Scenario == ScenarioChunkFly && (p.AbilityData.EntityUniqueID == game.EntityUniqueID || p.AbilityData.EntityUniqueID == 0) {
 				mayFly, flying := flightAbilityState(p.AbilityData)
