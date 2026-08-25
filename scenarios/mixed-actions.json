@@ -1,0 +1,10 @@
+{
+  "name": "mixed-actions",
+  "steps": [
+    {"action": "move", "ticks": 80, "forward": 1, "speed": 0.18},
+    {"action": "look", "ticks": 20, "yaw": -90, "pitch": 10},
+    {"action": "jump", "ticks": 2, "repeat": 3},
+    {"action": "wait", "ticks": 20},
+    {"action": "move", "forward": 1, "strafe": 0.5, "speed": 0.18}
+  ]
+}
