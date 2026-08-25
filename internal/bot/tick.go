@@ -11,6 +11,8 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
 
+const chunkWalkStepPerTick = float32(0.18)
+
 type packetWriter interface {
 	WritePacket(packet.Packet) error
 }
@@ -38,19 +40,58 @@ func (s *playerState) update(position mgl32.Vec3, pitch, yaw, headYaw float32, t
 	s.handledTeleport = s.handledTeleport || teleport
 }
 
-func (s *playerState) snapshot() (mgl32.Vec3, float32, float32, float32, bool) {
+func (s *playerState) inputSnapshot(scenario string, headingYaw float32) (mgl32.Vec3, float32, float32, float32, bool, mgl32.Vec3) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	teleport := s.handledTeleport
 	s.handledTeleport = false
-	return s.position, s.pitch, s.yaw, s.headYaw, teleport
+	pitch := s.pitch
+	yaw := s.yaw
+	headYaw := s.headYaw
+	delta := mgl32.Vec3{}
+
+	if scenario == ScenarioChunkWalk {
+		yaw = headingYaw
+		headYaw = headingYaw
+		if !teleport {
+			yawRad := float64(headingYaw) * math.Pi / 180
+			delta = mgl32.Vec3{
+				-float32(math.Sin(yawRad)) * chunkWalkStepPerTick,
+				0,
+				float32(math.Cos(yawRad)) * chunkWalkStepPerTick,
+			}
+			s.position[0] += delta[0]
+			s.position[2] += delta[2]
+		}
+	}
+
+	return s.position, pitch, yaw, headYaw, teleport, delta
 }
 
-func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
-	position, pitch, yaw, headYaw, handledTeleport := s.snapshot()
+func scenarioHeading(baseYaw float32, index, count int) float32 {
+	if count <= 1 {
+		return baseYaw
+	}
+	heading := float64(baseYaw) + 360*float64(index-1)/float64(count)
+	heading = math.Mod(heading+180, 360)
+	if heading < 0 {
+		heading += 360
+	}
+	return float32(heading - 180)
+}
+
+func authInputPacket(s *playerState, tick uint64, scenario string, headingYaw float32) *packet.PlayerAuthInput {
+	position, pitch, yaw, headYaw, handledTeleport, delta := s.inputSnapshot(scenario, headingYaw)
 	flags := protocol.NewInputFlags(packet.InputFlagCount)
 	if handledTeleport {
 		flags.Set(packet.InputFlagHandledTeleport)
+	}
+
+	moveVector := mgl32.Vec2{}
+	if scenario == ScenarioChunkWalk && !handledTeleport {
+		flags.Set(packet.InputFlagUp)
+		moveVector = mgl32.Vec2{0, 1}
 	}
 
 	pitchRad := float64(pitch) * math.Pi / 180
@@ -62,22 +103,26 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 	}
 
 	return &packet.PlayerAuthInput{
-		Pitch:             pitch,
-		Yaw:               yaw,
-		Position:          position,
-		HeadYaw:           headYaw,
-		InputData:         flags,
-		InputMode:         packet.InputModeMouse,
-		PlayMode:          packet.PlayModeScreen,
-		InteractionModel:  packet.InteractionModelCrosshair,
-		InteractPitch:     pitch,
-		InteractYaw:       yaw,
-		Tick:              tick,
-		CameraOrientation: camera,
+		Pitch:              pitch,
+		Yaw:                yaw,
+		Position:           position,
+		MoveVector:         moveVector,
+		HeadYaw:            headYaw,
+		InputData:          flags,
+		InputMode:          packet.InputModeMouse,
+		PlayMode:           packet.PlayModeScreen,
+		InteractionModel:   packet.InteractionModelCrosshair,
+		InteractPitch:      pitch,
+		InteractYaw:        yaw,
+		Tick:               tick,
+		Delta:              delta,
+		AnalogueMoveVector: moveVector,
+		CameraOrientation:  camera,
+		RawMoveVector:      moveVector,
 	}
 }
 
-func runTickLoop(ctx context.Context, writer packetWriter, state *playerState) error {
+func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, scenario string, headingYaw float32) error {
 	ticker := time.NewTicker(time.Second / 20)
 	defer ticker.Stop()
 
@@ -88,7 +133,7 @@ func runTickLoop(ctx context.Context, writer packetWriter, state *playerState) e
 			return nil
 		case <-ticker.C:
 			tick++
-			if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
+			if err := writer.WritePacket(authInputPacket(state, tick, scenario, headingYaw)); err != nil {
 				if ctx.Err() != nil {
 					return nil
 				}
