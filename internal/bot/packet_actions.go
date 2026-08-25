@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ReallocAll/bds-test-bot/internal/action"
+	"github.com/google/uuid"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
@@ -64,6 +65,7 @@ func NewCommandAction(writer packetWriter, command string) *PacketAction {
 			CommandLine: command,
 			CommandOrigin: protocol.CommandOrigin{
 				Origin: protocol.CommandOriginPlayer,
+				UUID:   uuid.New(),
 			},
 		}
 	})
