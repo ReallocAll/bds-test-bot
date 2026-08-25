@@ -18,6 +18,17 @@ type packetWriter interface {
 	WritePacket(packet.Packet) error
 }
 
+type inputControl struct {
+	moveVector    mgl32.Vec2
+	moveStep      float32
+	overrideYaw   bool
+	yaw           float32
+	overridePitch bool
+	pitch         float32
+	jump          bool
+	lastJump      bool
+}
+
 type playerState struct {
 	mu              sync.Mutex
 	position        mgl32.Vec3
@@ -25,6 +36,7 @@ type playerState struct {
 	yaw             float32
 	headYaw         float32
 	handledTeleport bool
+	control         inputControl
 }
 
 func newPlayerState(position mgl32.Vec3, pitch, yaw float32) *playerState {
@@ -41,7 +53,56 @@ func (s *playerState) update(position mgl32.Vec3, pitch, yaw, headYaw float32, t
 	s.handledTeleport = s.handledTeleport || teleport
 }
 
-func (s *playerState) inputSnapshot(scenario string, headingYaw float32) (mgl32.Vec3, float32, float32, float32, bool, mgl32.Vec3) {
+func (s *playerState) setIdleControl() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.control.moveVector = mgl32.Vec2{}
+	s.control.moveStep = 0
+	s.control.overrideYaw = false
+	s.control.overridePitch = false
+	s.control.jump = false
+}
+
+func (s *playerState) setMoveControl(vector mgl32.Vec2, stepPerTick, yaw float32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.control.moveVector = vector
+	s.control.moveStep = stepPerTick
+	s.control.overrideYaw = true
+	s.control.yaw = yaw
+}
+
+func (s *playerState) clearMoveControl() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.control.moveVector = mgl32.Vec2{}
+	s.control.moveStep = 0
+	s.control.overrideYaw = false
+}
+
+func (s *playerState) setLookControl(pitch, yaw float32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.control.overridePitch = true
+	s.control.pitch = pitch
+	s.control.overrideYaw = true
+	s.control.yaw = yaw
+}
+
+func (s *playerState) clearLookControl() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.control.overridePitch = false
+	s.control.overrideYaw = false
+}
+
+func (s *playerState) setJumpControl(jump bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.control.jump = jump
+}
+
+func (s *playerState) inputSnapshot() (mgl32.Vec3, float32, float32, float32, bool, mgl32.Vec3, mgl32.Vec2, bool, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -50,24 +111,37 @@ func (s *playerState) inputSnapshot(scenario string, headingYaw float32) (mgl32.
 	pitch := s.pitch
 	yaw := s.yaw
 	headYaw := s.headYaw
-	delta := mgl32.Vec3{}
 
-	if scenario == ScenarioChunkWalk {
-		yaw = headingYaw
-		headYaw = headingYaw
-		if !teleport {
-			yawRad := float64(headingYaw) * math.Pi / 180
-			delta = mgl32.Vec3{
-				-float32(math.Sin(yawRad)) * chunkWalkStepPerTick,
-				0,
-				float32(math.Cos(yawRad)) * chunkWalkStepPerTick,
-			}
-			s.position[0] += delta[0]
-			s.position[2] += delta[2]
-		}
+	if s.control.overridePitch {
+		pitch = s.control.pitch
+	}
+	if s.control.overrideYaw {
+		yaw = s.control.yaw
+		headYaw = s.control.yaw
 	}
 
-	return s.position, pitch, yaw, headYaw, teleport, delta
+	moveVector := s.control.moveVector
+	delta := mgl32.Vec3{}
+	if teleport {
+		moveVector = mgl32.Vec2{}
+	} else if moveVector != (mgl32.Vec2{}) && s.control.moveStep != 0 {
+		yawRad := float64(yaw) * math.Pi / 180
+		forward := float64(moveVector[1])
+		strafe := float64(moveVector[0])
+		delta = mgl32.Vec3{
+			float32(math.Cos(yawRad)*strafe-math.Sin(yawRad)*forward) * s.control.moveStep,
+			0,
+			float32(math.Sin(yawRad)*strafe+math.Cos(yawRad)*forward) * s.control.moveStep,
+		}
+		s.position[0] += delta[0]
+		s.position[2] += delta[2]
+	}
+
+	jump := s.control.jump && !teleport
+	lastJump := s.control.lastJump
+	s.control.lastJump = jump
+
+	return s.position, pitch, yaw, headYaw, teleport, delta, moveVector, jump, lastJump
 }
 
 func scenarioHeading(baseYaw float32, index, count int) float32 {
@@ -82,17 +156,36 @@ func scenarioHeading(baseYaw float32, index, count int) float32 {
 	return float32(heading - 180)
 }
 
-func authInputPacket(s *playerState, tick uint64, scenario string, headingYaw float32) *packet.PlayerAuthInput {
-	position, pitch, yaw, headYaw, handledTeleport, delta := s.inputSnapshot(scenario, headingYaw)
+func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
+	position, pitch, yaw, headYaw, handledTeleport, delta, moveVector, jumping, wasJumping := s.inputSnapshot()
 	flags := protocol.NewInputFlags(packet.InputFlagCount)
 	if handledTeleport {
 		flags.Set(packet.InputFlagHandledTeleport)
 	}
 
-	moveVector := mgl32.Vec2{}
-	if scenario == ScenarioChunkWalk && !handledTeleport {
+	if moveVector[1] > 0 {
 		flags.Set(packet.InputFlagUp)
-		moveVector = mgl32.Vec2{0, 1}
+	}
+	if moveVector[1] < 0 {
+		flags.Set(packet.InputFlagDown)
+	}
+	if moveVector[0] < 0 {
+		flags.Set(packet.InputFlagLeft)
+	}
+	if moveVector[0] > 0 {
+		flags.Set(packet.InputFlagRight)
+	}
+
+	if jumping {
+		flags.Set(packet.InputFlagJumping)
+		flags.Set(packet.InputFlagJumpCurrentRaw)
+		if !wasJumping {
+			flags.Set(packet.InputFlagJumpDown)
+			flags.Set(packet.InputFlagStartJumping)
+			flags.Set(packet.InputFlagJumpPressedRaw)
+		}
+	} else if wasJumping {
+		flags.Set(packet.InputFlagJumpReleasedRaw)
 	}
 
 	pitchRad := float64(pitch) * math.Pi / 180
@@ -104,11 +197,22 @@ func authInputPacket(s *playerState, tick uint64, scenario string, headingYaw fl
 	}
 
 	return &packet.PlayerAuthInput{
-		Pitch: pitch, Yaw: yaw, Position: position, MoveVector: moveVector,
-		HeadYaw: headYaw, InputData: flags, InputMode: packet.InputModeMouse,
-		PlayMode: packet.PlayModeScreen, InteractionModel: packet.InteractionModelCrosshair,
-		InteractPitch: pitch, InteractYaw: yaw, Tick: tick, Delta: delta,
-		AnalogueMoveVector: moveVector, CameraOrientation: camera, RawMoveVector: moveVector,
+		Pitch:              pitch,
+		Yaw:                yaw,
+		Position:           position,
+		MoveVector:         moveVector,
+		HeadYaw:            headYaw,
+		InputData:          flags,
+		InputMode:          packet.InputModeMouse,
+		PlayMode:           packet.PlayModeScreen,
+		InteractionModel:   packet.InteractionModelCrosshair,
+		InteractPitch:      pitch,
+		InteractYaw:        yaw,
+		Tick:               tick,
+		Delta:              delta,
+		AnalogueMoveVector: moveVector,
+		CameraOrientation:  camera,
+		RawMoveVector:      moveVector,
 	}
 }
 
@@ -131,7 +235,7 @@ func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, s
 			if err := runner.Tick(ctx, action.TickContext{Tick: tick}); err != nil {
 				return err
 			}
-			if err := writer.WritePacket(authInputPacket(state, tick, scenario, headingYaw)); err != nil {
+			if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
 				if ctx.Err() != nil {
 					return nil
 				}
