@@ -41,8 +41,8 @@ func TestChunkFlyRequestsServerAbilityBeforePredictingMovement(t *testing.T) {
 	if !input.InputData.Load(packet.InputFlagBlockBreakingDelayEnabled) {
 		t.Fatal("auth input must include the normal Bedrock block-breaking-delay baseline flag")
 	}
-	if input.PlayMode != packet.PlayModeNormal {
-		t.Fatalf("play mode = %d, want normal", input.PlayMode)
+	if input.InputMode != packet.InputModeMouse || input.PlayMode != packet.PlayModeScreen || input.InteractionModel != packet.InteractionModelCrosshair {
+		t.Fatalf("desktop input tuple = mode %d play %d interaction %d", input.InputMode, input.PlayMode, input.InteractionModel)
 	}
 	if input.MoveVector != (mgl32.Vec2{}) || input.Delta != (mgl32.Vec3{}) {
 		t.Fatalf("movement predicted before server flight acknowledgement: %+v", input)
