@@ -195,7 +195,7 @@ func runInstance(
 				stats.AuthInputsSent = authInputs.Load()
 				stats.MovementInputsSent = movementInputs.Load()
 				_ = out.Emit("disconnected", map[string]any{
-					"uptime":              time.Since(stats.StartedAt).Round(time.Millisecond).String(),
+					"uptime":               time.Since(stats.StartedAt).Round(time.Millisecond).String(),
 					"packets_received":     stats.PacketsReceived,
 					"chunks_received":      stats.ChunksReceived,
 					"auth_inputs_sent":     stats.AuthInputsSent,

@@ -103,22 +103,22 @@ func authInputPacket(s *playerState, tick uint64, scenario string, headingYaw fl
 	}
 
 	return &packet.PlayerAuthInput{
-		Pitch:             pitch,
-		Yaw:               yaw,
-		Position:          position,
-		MoveVector:        moveVector,
-		HeadYaw:           headYaw,
-		InputData:         flags,
-		InputMode:         packet.InputModeMouse,
-		PlayMode:          packet.PlayModeScreen,
-		InteractionModel:  packet.InteractionModelCrosshair,
-		InteractPitch:     pitch,
-		InteractYaw:       yaw,
-		Tick:              tick,
-		Delta:             delta,
+		Pitch:              pitch,
+		Yaw:                yaw,
+		Position:           position,
+		MoveVector:         moveVector,
+		HeadYaw:            headYaw,
+		InputData:          flags,
+		InputMode:          packet.InputModeMouse,
+		PlayMode:           packet.PlayModeScreen,
+		InteractionModel:   packet.InteractionModelCrosshair,
+		InteractPitch:      pitch,
+		InteractYaw:        yaw,
+		Tick:               tick,
+		Delta:              delta,
 		AnalogueMoveVector: moveVector,
-		CameraOrientation: camera,
-		RawMoveVector:     moveVector,
+		CameraOrientation:  camera,
+		RawMoveVector:      moveVector,
 	}
 }
 
