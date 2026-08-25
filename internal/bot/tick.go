@@ -247,14 +247,15 @@ func (s *playerState) inputSnapshot() authInputSnapshot {
 		snapshot.moveVector = mgl32.Vec2{}
 	} else if s.control.fly {
 		if !s.flyingConfirmed || !s.positionReady {
-			// Wait for BDS to publish the real spawn position before movement.
+			// Never predict from StartGame's temporary Y≈32768 position. Wait
+			// until the first stable server publisher position seeds the player.
 			snapshot.moveVector = mgl32.Vec2{}
-		} else if s.position[1] < s.control.flightTargetY-0.75 {
-			// Match a real client heartbeat: movement intent is authoritative,
-			// while Position remains the last server-observed position and Delta
-			// stays zero. BDS advances flight and publisher updates feed it back.
-			snapshot.moveVector = mgl32.Vec2{}
-			snapshot.verticalDirection = 1
+		} else {
+			// Diagnostic path: keep the server-owned spawn altitude unchanged and
+			// exercise the same client-predicted horizontal movement model that
+			// already works for chunk-walk. This isolates flying+horizontal input
+			// from the previously rejected vertical ascent prediction.
+			applyHorizontalMovement(s, &snapshot, s.control.moveStep)
 		}
 	} else if snapshot.moveVector != (mgl32.Vec2{}) && s.control.moveStep != 0 {
 		applyHorizontalMovement(s, &snapshot, s.control.moveStep)
@@ -295,9 +296,7 @@ func scenarioHeading(baseYaw float32, index, count int) float32 {
 func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 	snapshot := s.inputSnapshot()
 	flags := protocol.NewInputFlags(packet.InputFlagCount)
-	if !snapshot.flightRequested {
-		flags.Set(packet.InputFlagBlockBreakingDelayEnabled)
-	}
+	flags.Set(packet.InputFlagBlockBreakingDelayEnabled)
 	if snapshot.handledTeleport {
 		flags.Set(packet.InputFlagHandledTeleport)
 	}
@@ -347,27 +346,24 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 		float32(math.Cos(yawRad) * math.Cos(pitchRad)),
 	}
 
-	input := &packet.PlayerAuthInput{
-		Pitch:            snapshot.pitch,
-		Yaw:              snapshot.yaw,
-		Position:         snapshot.position,
-		MoveVector:       snapshot.moveVector,
-		HeadYaw:          snapshot.headYaw,
-		InputData:        flags,
-		InputMode:        packet.InputModeMouse,
-		PlayMode:         packet.PlayModeScreen,
-		InteractionModel: packet.InteractionModelCrosshair,
-		Tick:             tick,
-		Delta:            snapshot.delta,
+	return &packet.PlayerAuthInput{
+		Pitch:              snapshot.pitch,
+		Yaw:                snapshot.yaw,
+		Position:           snapshot.position,
+		MoveVector:         snapshot.moveVector,
+		HeadYaw:            snapshot.headYaw,
+		InputData:          flags,
+		InputMode:          packet.InputModeMouse,
+		PlayMode:           packet.PlayModeScreen,
+		InteractionModel:   packet.InteractionModelCrosshair,
+		InteractPitch:      snapshot.pitch,
+		InteractYaw:        snapshot.yaw,
+		Tick:               tick,
+		Delta:              snapshot.delta,
+		AnalogueMoveVector: snapshot.moveVector,
+		CameraOrientation:  camera,
+		RawMoveVector:      snapshot.moveVector,
 	}
-	if !snapshot.flightRequested {
-		input.InteractPitch = snapshot.pitch
-		input.InteractYaw = snapshot.yaw
-		input.AnalogueMoveVector = snapshot.moveVector
-		input.CameraOrientation = camera
-		input.RawMoveVector = snapshot.moveVector
-	}
-	return input
 }
 
 func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, cfg Config, headingYaw float32, botName string, entityRuntimeID uint64) error {
@@ -396,11 +392,6 @@ func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, c
 				continue
 			}
 			tick := state.nextInputTick()
-			if cfg.Scenario == ScenarioChunkFly {
-				// Current Bedrock clients use the neutral movement tick for this
-				// server-driven heartbeat path; keep other scenarios unchanged.
-				tick = 0
-			}
 			if err := runner.Tick(ctx, action.TickContext{Tick: tick}); err != nil {
 				return err
 			}

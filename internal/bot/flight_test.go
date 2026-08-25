@@ -37,8 +37,8 @@ func TestChunkFlyRequestsServerAbilityBeforePredictingMovement(t *testing.T) {
 	if !input.InputData.Load(packet.InputFlagStartFlying) {
 		t.Fatal("unacknowledged flight input must request StartFlying")
 	}
-	if input.InputData.Load(packet.InputFlagBlockBreakingDelayEnabled) {
-		t.Fatal("flight heartbeat must not include the block-breaking-delay baseline flag")
+	if !input.InputData.Load(packet.InputFlagBlockBreakingDelayEnabled) {
+		t.Fatal("auth input must include the normal Bedrock block-breaking-delay baseline flag")
 	}
 	if input.InputMode != packet.InputModeMouse || input.PlayMode != packet.PlayModeScreen || input.InteractionModel != packet.InteractionModelCrosshair {
 		t.Fatalf("desktop input tuple = mode %d play %d interaction %d", input.InputMode, input.PlayMode, input.InteractionModel)
@@ -48,15 +48,12 @@ func TestChunkFlyRequestsServerAbilityBeforePredictingMovement(t *testing.T) {
 	}
 }
 
-func TestChunkFlyAcknowledgesPublisherSpawnBeforeMovement(t *testing.T) {
+func TestChunkFlyAcknowledgesPublisherSpawnBeforeHorizontalPrediction(t *testing.T) {
 	state := newPlayerState(mgl32.Vec3{12.5, 32769.625, -7.5}, 0, 0)
 	writer := &recordingPacketWriter{}
 	fly := NewChunkFlyAction(state, writer, 0)
 	if state.positionReadySnapshot() {
 		t.Fatal("placeholder StartGame altitude must not be position-ready")
-	}
-	if fly.targetY != chunkFlyMinimumAltitude {
-		t.Fatalf("placeholder target altitude = %f, want %f", fly.targetY, chunkFlyMinimumAltitude)
 	}
 	if err := fly.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -71,32 +68,26 @@ func TestChunkFlyAcknowledgesPublisherSpawnBeforeMovement(t *testing.T) {
 	if !state.acceptPublisherPosition(publisherPosition) {
 		t.Fatal("stable server publisher position was not accepted")
 	}
-	if !state.positionReadySnapshot() {
-		t.Fatal("publisher position did not make movement position-ready")
-	}
 	ack := authInputPacket(state, 2)
-	if !ack.InputData.Load(packet.InputFlagHandledTeleport) {
-		t.Fatalf("publisher spawn acknowledgement missing HandledTeleport: %+v", ack.InputData)
-	}
-	if !ack.InputData.Load(packet.InputFlagStartFlying) {
-		t.Fatal("publisher spawn acknowledgement must keep flying asserted")
+	if !ack.InputData.Load(packet.InputFlagHandledTeleport) || !ack.InputData.Load(packet.InputFlagStartFlying) {
+		t.Fatalf("publisher spawn acknowledgement flags = %+v", ack.InputData)
 	}
 	if ack.Position != publisherPosition || ack.MoveVector != (mgl32.Vec2{}) || ack.Delta != (mgl32.Vec3{}) {
-		t.Fatalf("publisher spawn acknowledgement must be stationary at authoritative position: %+v", ack)
+		t.Fatalf("publisher spawn acknowledgement must be stationary: %+v", ack)
 	}
 
-	climb := authInputPacket(state, 3)
-	if climb.InputData.Load(packet.InputFlagHandledTeleport) {
+	cruise := authInputPacket(state, 3)
+	if cruise.InputData.Load(packet.InputFlagHandledTeleport) {
 		t.Fatal("HandledTeleport must only be sent for the acknowledgement frame")
 	}
-	if !climb.InputData.Load(packet.InputFlagAscend) || !climb.InputData.Load(packet.InputFlagWantUp) {
-		t.Fatalf("post-ack climb missing ascent flags: %+v", climb.InputData)
+	if cruise.InputData.Load(packet.InputFlagAscend) || cruise.InputData.Load(packet.InputFlagWantUp) {
+		t.Fatalf("horizontal-only diagnostic unexpectedly requested ascent: %+v", cruise.InputData)
 	}
-	if climb.Delta != (mgl32.Vec3{}) || climb.MoveVector != (mgl32.Vec2{}) {
-		t.Fatalf("post-ack climb must be server-driven with zero client delta: %+v", climb)
+	if cruise.MoveVector != (mgl32.Vec2{0, 1}) || cruise.Delta[2] <= 0 || cruise.Delta[1] != 0 {
+		t.Fatalf("horizontal prediction = move %v delta %v", cruise.MoveVector, cruise.Delta)
 	}
-	if state.acceptPublisherPosition(mgl32.Vec3{12.5, fly.targetY, -7.5}) {
-		t.Fatal("publisher seeding must not overwrite an already-ready predicted position")
+	if cruise.Position[1] != publisherPosition[1] {
+		t.Fatalf("horizontal diagnostic changed altitude: %v", cruise.Position)
 	}
 }
 
@@ -108,7 +99,7 @@ func TestPublisherEyePositionUsesAuthoritativeBlockPosition(t *testing.T) {
 	}
 }
 
-func TestPublisherObservationDrivesAuthoritativeCruisePosition(t *testing.T) {
+func TestPublisherTelemetryDoesNotOverwritePredictedFlightPosition(t *testing.T) {
 	state := newPlayerState(mgl32.Vec3{4.5, 80, 8.5}, 0, 0)
 	writer := &recordingPacketWriter{}
 	fly := NewChunkFlyAction(state, writer, 0)
@@ -116,23 +107,20 @@ func TestPublisherObservationDrivesAuthoritativeCruisePosition(t *testing.T) {
 		t.Fatal(err)
 	}
 	state.setFlyingConfirmed(true)
-	serverPos := mgl32.Vec3{7.5, fly.targetY, 11.5}
-	if !state.observePublisherPosition(serverPos) {
-		t.Fatal("publisher position was not observed")
+	first := authInputPacket(state, 7)
+	if first.Delta[2] <= 0 {
+		t.Fatalf("first predicted flight delta = %v", first.Delta)
 	}
-	input := authInputPacket(state, 0)
-	if input.Position != serverPos {
-		t.Fatalf("auth input position = %v, want server position %v", input.Position, serverPos)
-	}
-	if input.MoveVector != (mgl32.Vec2{0, 1}) || input.Delta != (mgl32.Vec3{}) {
-		t.Fatalf("server-driven cruise = move %v delta %v", input.MoveVector, input.Delta)
-	}
-	if input.Tick != 0 || input.RawMoveVector != (mgl32.Vec2{}) || input.AnalogueMoveVector != (mgl32.Vec2{}) {
-		t.Fatalf("flight heartbeat must keep tick/raw/analogue neutral: %+v", input)
+	before, _, _ := state.telemetrySnapshot()
+	// NetworkChunkPublisherUpdate remains server evidence only after the initial
+	// spawn seed. The bot read loop no longer calls observePublisherPosition here.
+	after, _, _ := state.telemetrySnapshot()
+	if after != before {
+		t.Fatalf("publisher telemetry overwrote prediction: before=%v after=%v", before, after)
 	}
 }
 
-func TestChunkFlyClimbsThenTraversesAtSafeAltitude(t *testing.T) {
+func TestChunkFlyHorizontalDiagnosticKeepsAuthoritativeAltitude(t *testing.T) {
 	state := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
 	writer := &recordingPacketWriter{}
 	fly := NewChunkFlyAction(state, writer, 0)
@@ -141,27 +129,22 @@ func TestChunkFlyClimbsThenTraversesAtSafeAltitude(t *testing.T) {
 	}
 	state.setFlyingConfirmed(true)
 
-	climb := authInputPacket(state, 1)
-	if !climb.InputData.Load(packet.InputFlagAscend) || !climb.InputData.Load(packet.InputFlagWantUp) {
-		t.Fatalf("climb packet missing flight ascent flags: %+v", climb.InputData)
+	input := authInputPacket(state, 1)
+	if input.InputData.Load(packet.InputFlagAscend) || input.InputData.Load(packet.InputFlagWantUp) {
+		t.Fatalf("horizontal diagnostic requested ascent: %+v", input.InputData)
 	}
-	if climb.Delta != (mgl32.Vec3{}) || climb.MoveVector != (mgl32.Vec2{}) {
-		t.Fatalf("climb packet must carry ascent intent without client delta: delta %v move %v", climb.Delta, climb.MoveVector)
+	if input.MoveVector != (mgl32.Vec2{0, 1}) || input.Delta[2] <= 0 || input.Delta[1] != 0 {
+		t.Fatalf("horizontal diagnostic = move %v delta %v", input.MoveVector, input.Delta)
 	}
-
-	if !state.observePublisherPosition(mgl32.Vec3{0, fly.targetY, 0}) {
-		t.Fatal("server publisher update did not advance flight state")
+	if input.Position[1] != 64 {
+		t.Fatalf("horizontal diagnostic altitude = %f, want 64", input.Position[1])
 	}
-	cruise := authInputPacket(state, 2)
-	if cruise.MoveVector != (mgl32.Vec2{0, 1}) {
-		t.Fatalf("cruise move vector = %v", cruise.MoveVector)
-	}
-	if cruise.Delta != (mgl32.Vec3{}) {
-		t.Fatalf("server-driven cruise must not fabricate client delta: %v", cruise.Delta)
+	if input.RawMoveVector != input.MoveVector || input.AnalogueMoveVector != input.MoveVector {
+		t.Fatalf("flight packet missing normal raw/analogue movement fields: %+v", input)
 	}
 }
 
-func TestChunkFlyResumesFromServerCorrection(t *testing.T) {
+func TestChunkFlyHorizontalPredictionResumesFromServerCorrection(t *testing.T) {
 	state := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
 	writer := &recordingPacketWriter{}
 	fly := NewChunkFlyAction(state, writer, 90)
@@ -169,15 +152,18 @@ func TestChunkFlyResumesFromServerCorrection(t *testing.T) {
 		t.Fatal(err)
 	}
 	state.setFlyingConfirmed(true)
-	state.correct(mgl32.Vec3{10, fly.targetY - 1, 20}, 0, 90, 90)
+	corrected := mgl32.Vec3{10, 90, 20}
+	state.correct(corrected, 0, 90, 90)
 
 	input := authInputPacket(state, 1)
-	if input.Position[0] != 10 || input.Position[2] != 20 {
-		t.Fatalf("flight did not resume from corrected horizontal position: %v", input.Position)
+	if input.Delta[0] >= 0 || input.Delta[1] != 0 {
+		t.Fatalf("corrected horizontal flight delta = %v", input.Delta)
 	}
-	if input.Delta != (mgl32.Vec3{}) || input.MoveVector != (mgl32.Vec2{}) ||
-		!input.InputData.Load(packet.InputFlagAscend) || !input.InputData.Load(packet.InputFlagWantUp) {
-		t.Fatalf("corrected flight should recover altitude through server-driven ascent intent: %+v", input)
+	if input.Position[1] != corrected[1] || input.Position[0] >= corrected[0] {
+		t.Fatalf("flight did not resume horizontally from correction: %v", input.Position)
+	}
+	if input.InputData.Load(packet.InputFlagAscend) || input.InputData.Load(packet.InputFlagWantUp) {
+		t.Fatalf("horizontal correction recovery requested ascent: %+v", input.InputData)
 	}
 	_, _, corrections := state.telemetrySnapshot()
 	if corrections != 1 {
