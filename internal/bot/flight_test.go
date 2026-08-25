@@ -11,15 +11,6 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
 
-type recordingPacketWriter struct {
-	packets []packet.Packet
-}
-
-func (w *recordingPacketWriter) WritePacket(pk packet.Packet) error {
-	w.packets = append(w.packets, pk)
-	return nil
-}
-
 func TestChunkFlyRequestsServerAbilityBeforePredictingMovement(t *testing.T) {
 	ctx := context.Background()
 	state := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
