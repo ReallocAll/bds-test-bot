@@ -66,7 +66,7 @@ func TestTickLoopStopsOnCancellation(t *testing.T) {
 	done := make(chan error, 1)
 	cfg := DefaultConfig()
 	cfg.Scenario = ScenarioIdle
-	go func() { done <- runTickLoop(ctx, writer, state, cfg, 0) }()
+	go func() { done <- runTickLoop(ctx, writer, state, cfg, 0, "TestBot", 1) }()
 	time.Sleep(80 * time.Millisecond)
 	cancel()
 	select {
