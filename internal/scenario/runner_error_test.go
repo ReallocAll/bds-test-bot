@@ -1,17 +1,20 @@
 package scenario
 
 import (
+	"context"
 	"errors"
 	"testing"
+
+	"github.com/ReallocAll/bds-test-bot/internal/action"
 )
 
 func TestRunnerExposesFactoryError(t *testing.T) {
 	want := errors.New("boom")
-	r := NewRunner(Scenario{Name: "bad", Steps: []Step{{Action: "broken"}}}, func(Step) (Action, error) {
+	r := NewRunner(Scenario{Name: "bad", Steps: []Step{{Action: "broken"}}}, func(Step) (action.Action, error) {
 		return nil, want
 	})
-	if r.Tick() {
-		t.Fatal("runner should stop after factory error")
+	if err := r.Start(context.Background()); !errors.Is(err, ErrActionFactory) {
+		t.Fatalf("Start() error = %v, want ErrActionFactory", err)
 	}
 	if !errors.Is(r.Err(), ErrActionFactory) {
 		t.Fatalf("Err() = %v, want ErrActionFactory", r.Err())
@@ -19,11 +22,11 @@ func TestRunnerExposesFactoryError(t *testing.T) {
 }
 
 func TestRunnerRejectsNilAction(t *testing.T) {
-	r := NewRunner(Scenario{Name: "bad", Steps: []Step{{Action: "nil"}}}, func(Step) (Action, error) {
+	r := NewRunner(Scenario{Name: "bad", Steps: []Step{{Action: "nil"}}}, func(Step) (action.Action, error) {
 		return nil, nil
 	})
-	if r.Tick() {
-		t.Fatal("runner should stop for nil action")
+	if err := r.Start(context.Background()); !errors.Is(err, ErrActionFactory) {
+		t.Fatalf("Start() error = %v, want ErrActionFactory", err)
 	}
 	if !errors.Is(r.Err(), ErrActionFactory) {
 		t.Fatalf("Err() = %v, want ErrActionFactory", r.Err())
