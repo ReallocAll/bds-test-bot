@@ -47,10 +47,10 @@ func TestChatActionWritesTextPacket(t *testing.T) {
 	}
 }
 
-func TestCommandActionNormalizesSlashAndUsesUniqueOrigin(t *testing.T) {
+func TestCommandActionEncodesPlayerOrigin(t *testing.T) {
 	writer := &recordingPacketWriter{}
 	for tick := uint64(1); tick <= 2; tick++ {
-		a := NewCommandAction(writer, "list")
+		a := NewCommandAction(writer, "/list", 42)
 		if err := a.Tick(context.Background(), action.TickContext{Tick: tick}); err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +63,7 @@ func TestCommandActionNormalizesSlashAndUsesUniqueOrigin(t *testing.T) {
 	if !ok {
 		t.Fatalf("packet = %T, want *packet.CommandRequest", writer.packets[1])
 	}
-	if first.CommandLine != "/list" || first.CommandOrigin.Origin != protocol.CommandOriginPlayer {
+	if first.CommandLine != "list" || first.CommandOrigin.Origin != protocol.CommandOriginPlayer || first.CommandOrigin.PlayerUniqueID != 42 {
 		t.Fatalf("unexpected command packet: %+v", first)
 	}
 	if first.CommandOrigin.UUID == uuid.Nil || second.CommandOrigin.UUID == uuid.Nil {
