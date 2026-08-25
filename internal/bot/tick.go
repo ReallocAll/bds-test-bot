@@ -33,18 +33,19 @@ type inputControl struct {
 }
 
 type playerState struct {
-	mu                sync.Mutex
-	position          mgl32.Vec3
-	positionReady     bool
-	pitch             float32
-	yaw               float32
-	headYaw           float32
-	handledTeleport   bool
-	flyingConfirmed   bool
-	serverCorrections uint64
-	serverTick        uint64
-	tickSynced        bool
-	control           inputControl
+	mu                  sync.Mutex
+	position            mgl32.Vec3
+	positionReady       bool
+	publisherDriven     bool
+	pitch               float32
+	yaw                 float32
+	headYaw             float32
+	handledTeleport     bool
+	flyingConfirmed     bool
+	serverCorrections   uint64
+	serverTick          uint64
+	tickSynced          bool
+	control             inputControl
 }
 
 type authInputSnapshot struct {
@@ -108,11 +109,20 @@ func (s *playerState) correct(position mgl32.Vec3, pitch, yaw, headYaw float32) 
 func (s *playerState) acceptPublisherPosition(position mgl32.Vec3) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.positionReady || !validPlayerPositionY(position[1]) {
+	if !validPlayerPositionY(position[1]) {
 		return false
 	}
-	s.position = position
+	if !s.positionReady {
+		s.position = position
+	} else {
+		// NetworkChunkPublisherUpdate only has block precision. Once the initial
+		// placeholder position has been replaced, use stable publisher updates
+		// to advance authoritative flight height without destroying any finer
+		// X/Z position supplied by MovePlayer/corrections.
+		s.position[1] = position[1]
+	}
 	s.positionReady = true
+	s.publisherDriven = true
 	return true
 }
 
@@ -236,20 +246,32 @@ func (s *playerState) inputSnapshot() authInputSnapshot {
 			diff := s.control.flightTargetY - s.position[1]
 			if float32(math.Abs(float64(diff))) > 0.05 {
 				snapshot.moveVector = mgl32.Vec2{}
-				step := s.control.verticalStep
-				if step <= 0 {
-					step = float32(math.Abs(float64(diff)))
+				if s.publisherDriven {
+					// In server-authoritative mode the input flags describe ascent or
+					// descent. Keep Position at the latest server-owned value and let
+					// stable publisher updates advance height instead of inventing a
+					// client-side position/delta that BDS may reject.
+					if diff > 0 {
+						snapshot.verticalDirection = 1
+					} else {
+						snapshot.verticalDirection = -1
+					}
+				} else {
+					step := s.control.verticalStep
+					if step <= 0 {
+						step = float32(math.Abs(float64(diff)))
+					}
+					if float32(math.Abs(float64(diff))) < step {
+						step = float32(math.Abs(float64(diff)))
+					}
+					if diff < 0 {
+						step = -step
+					}
+					snapshot.delta[1] = step
+					snapshot.verticalDirection = step
+					s.position[1] += step
 				}
-				if float32(math.Abs(float64(diff))) < step {
-					step = float32(math.Abs(float64(diff)))
-				}
-				if diff < 0 {
-					step = -step
-				}
-				snapshot.delta[1] = step
-				snapshot.verticalDirection = step
-				s.position[1] += step
-			} else {
+			} else if !s.publisherDriven {
 				applyHorizontalMovement(s, &snapshot, s.control.moveStep)
 			}
 		}
@@ -310,7 +332,7 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 		flags.Set(packet.InputFlagRight)
 	}
 
-	if snapshot.flightRequested && !snapshot.flyingConfirmed {
+	if snapshot.flightRequested {
 		flags.Set(packet.InputFlagStartFlying)
 	}
 	if snapshot.verticalDirection > 0 {
