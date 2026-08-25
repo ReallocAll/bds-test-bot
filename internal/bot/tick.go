@@ -334,14 +334,6 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 		flags.Set(packet.InputFlagJumpReleasedRaw)
 	}
 
-	pitchRad := float64(snapshot.pitch) * math.Pi / 180
-	yawRad := float64(snapshot.yaw) * math.Pi / 180
-	camera := mgl32.Vec3{
-		-float32(math.Sin(yawRad) * math.Cos(pitchRad)),
-		-float32(math.Sin(pitchRad)),
-		float32(math.Cos(yawRad) * math.Cos(pitchRad)),
-	}
-
 	return &packet.PlayerAuthInput{
 		Pitch:              snapshot.pitch,
 		Yaw:                snapshot.yaw,
@@ -349,15 +341,14 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 		MoveVector:         snapshot.moveVector,
 		HeadYaw:            snapshot.headYaw,
 		InputData:          flags,
-		InputMode:          packet.InputModeMouse,
+		InputMode:          packet.InputModeTouch,
 		PlayMode:           packet.PlayModeNormal,
-		InteractionModel:   packet.InteractionModelCrosshair,
+		InteractionModel:   packet.InteractionModelTouch,
 		InteractPitch:      snapshot.pitch,
 		InteractYaw:        snapshot.yaw,
 		Tick:               tick,
 		Delta:              snapshot.delta,
 		AnalogueMoveVector: snapshot.moveVector,
-		CameraOrientation:  camera,
 		RawMoveVector:      snapshot.moveVector,
 	}
 }
