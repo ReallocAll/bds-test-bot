@@ -12,7 +12,7 @@ type testAction struct {
 	done      bool
 }
 
-func (a *testAction) Name() string { return "test" }
+func (a *testAction) Name() string                { return "test" }
 func (a *testAction) Start(context.Context) error { return nil }
 func (a *testAction) Tick(context.Context, action.TickContext) error {
 	if a.done {
