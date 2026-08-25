@@ -64,7 +64,9 @@ func TestTickLoopStopsOnCancellation(t *testing.T) {
 	writer := &countingWriter{}
 	state := newPlayerState(mgl32.Vec3{}, 0, 0)
 	done := make(chan error, 1)
-	go func() { done <- runTickLoop(ctx, writer, state, ScenarioIdle, 0) }()
+	cfg := DefaultConfig()
+	cfg.Scenario = ScenarioIdle
+	go func() { done <- runTickLoop(ctx, writer, state, cfg, 0) }()
 	time.Sleep(80 * time.Millisecond)
 	cancel()
 	select {

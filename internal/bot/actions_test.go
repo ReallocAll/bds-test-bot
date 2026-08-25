@@ -107,7 +107,12 @@ func TestJumpActionEmitsPressHoldAndRelease(t *testing.T) {
 func TestScenarioActionsPreserveV01Semantics(t *testing.T) {
 	ctx := context.Background()
 	idleState := newPlayerState(mgl32.Vec3{1, 64, 2}, 0, 0)
-	idle := newScenarioAction(ScenarioIdle, idleState, 0)
+	idleCfg := DefaultConfig()
+	idleCfg.Scenario = ScenarioIdle
+	idle, err := newScenarioAction(idleCfg, idleState, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := idle.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +124,12 @@ func TestScenarioActionsPreserveV01Semantics(t *testing.T) {
 	}
 
 	walkState := newPlayerState(mgl32.Vec3{1, 64, 2}, 0, 0)
-	walk := newScenarioAction(ScenarioChunkWalk, walkState, 0)
+	walkCfg := DefaultConfig()
+	walkCfg.Scenario = ScenarioChunkWalk
+	walk, err := newScenarioAction(walkCfg, walkState, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := walk.Start(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -174,7 +174,7 @@ func runInstance(
 	defer cancelTick()
 	tickErr := make(chan error, 1)
 	writer := authInputWriter{writer: conn, count: &authInputs, movementCount: &movementInputs}
-	go func() { tickErr <- runTickLoop(tickCtx, writer, state, cfg.Scenario, headingYaw) }()
+	go func() { tickErr <- runTickLoop(tickCtx, writer, state, cfg, headingYaw) }()
 	if err := out.Emit("scenario_started", map[string]any{"heading_yaw": headingYaw}); err != nil {
 		return stageError(ExitRuntime, "output", err)
 	}

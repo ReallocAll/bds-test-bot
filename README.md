@@ -23,7 +23,9 @@ The bot leaves `minecraft.Dialer.TokenSource` unset and supplies offline identit
 - Configurable chunk-radius request, default `8`.
 - `LevelChunk` reception with per-bot counters.
 - Independent `PlayerAuthInput` at 20 ticks/s per bot.
-- `idle` and `chunk-walk` scenarios.
+- Built-in `idle` and `chunk-walk` scenarios.
+- JSON or YAML scenario files through `--scenario-file`.
+- Configurable `idle`, `wait`, `move`, `look`, and `jump` actions with ordered execution and per-step repeat counts.
 - `chunk-walk` emits forward movement input and position/delta updates, with fleet headings distributed around 360 degrees.
 - Server movement/teleport correction tracking.
 - Per-bot packet, chunk, auth-input, and movement-input statistics.
@@ -69,10 +71,23 @@ Twenty walking bots:
   --json
 ```
 
+Configured scenario:
+
+```bash
+./bds-test-bot \
+  --host 127.0.0.1 \
+  --port 19132 \
+  --count 10 \
+  --name-prefix LoadBot \
+  --scenario-file scenarios/scenario-smoke.yaml \
+  --json
+```
+
 Useful CI options:
 
 ```text
 --json
+--scenario-file PATH
 --connect-timeout 15s
 --spawn-timeout 30s
 --login-stagger 250ms
@@ -105,6 +120,41 @@ Bots keep their server-corrected position and send a stationary `PlayerAuthInput
 Each bot continuously sends forward movement at 20 TPS. Fleet members receive different headings so they fan out rather than all walking along the same path. The bot records both total auth inputs and movement auth inputs so CI can prove the movement workload was actually emitted.
 
 `chunk-walk` is a deterministic load scenario, not pathfinding: it does not decode terrain or plan around obstacles.
+
+### Configured scenarios
+
+`--scenario-file` accepts JSON or YAML. Steps execute in order at the same 20 TPS cadence as `PlayerAuthInput`. `repeat` means the step is recreated and executed that many times; omitted or `0` means one execution.
+
+Supported actions:
+
+| Action | Parameters | Behavior |
+| --- | --- | --- |
+| `idle` | optional `ticks` | Stationary input; no `ticks` means indefinite. |
+| `wait` | `ticks` | Stationary timed pause. |
+| `move` | `forward`, `strafe`, optional `speed`, `yaw`, `ticks` | Local movement vector. `forward`/`strafe` are in `-1..1`; omitted `ticks` means indefinite. |
+| `look` | `ticks`, optional `yaw`, `pitch` | Holds camera/player rotation for a fixed number of ticks. |
+| `jump` | `ticks` | Emits Bedrock jump press/hold/release input flags. |
+
+Example YAML:
+
+```yaml
+name: scenario-smoke
+steps:
+  - action: wait
+    ticks: 20
+  - action: look
+    ticks: 20
+    yaw: 90
+    pitch: -10
+  - action: jump
+    ticks: 2
+    repeat: 2
+  - action: move
+    forward: 1
+    speed: 0.18
+```
+
+The final `move` is intentionally indefinite so the bot continues generating chunk-travel load until the harness terminates it. See `scenarios/scenario-smoke.yaml` and `scenarios/mixed-actions.json` for checked-in examples.
 
 ## JSONL events
 
@@ -163,4 +213,4 @@ The critical settings are `online-mode=false`, `player-idle-timeout=0`, and a `m
 - Offline/LAN test mode only; no Microsoft/Xbox OAuth flow.
 - No terrain-aware pathfinding, combat, inventory, block interaction, crafting, or world database.
 - Chunk payloads are counted but not decoded into a world representation.
-- `chunk-walk` is synthetic forward movement for load testing and does not navigate obstacles.
+- Built-in `chunk-walk` and configured movement are synthetic load generation and do not navigate obstacles.

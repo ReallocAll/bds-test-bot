@@ -1,6 +1,10 @@
 package bot
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestParseConfigDefaults(t *testing.T) {
 	cfg, err := ParseConfig(nil)
@@ -57,6 +61,21 @@ func TestParseConfigAcceptsChunkWalk(t *testing.T) {
 	}
 	if cfg.Scenario != ScenarioChunkWalk {
 		t.Fatalf("scenario = %q, want %q", cfg.Scenario, ScenarioChunkWalk)
+	}
+}
+
+func TestParseConfigLoadsScenarioFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mixed.yaml")
+	data := []byte("name: mixed\nsteps:\n  - action: move\n    ticks: 4\n    forward: 1\n  - action: wait\n    ticks: 2\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ParseConfig([]string{"--scenario-file", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Scenario != "mixed" || cfg.ScenarioDefinition == nil || len(cfg.ScenarioDefinition.Steps) != 2 {
+		t.Fatalf("scenario file not loaded: %+v", cfg)
 	}
 }
 

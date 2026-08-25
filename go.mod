@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/go-gl/mathgl v1.1.0
 	github.com/sandertv/gophertunnel v1.59.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
