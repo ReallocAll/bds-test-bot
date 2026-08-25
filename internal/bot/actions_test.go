@@ -53,7 +53,9 @@ func TestLookActionOverridesAndReleasesRotation(t *testing.T) {
 	if pk.Pitch != -20 || pk.Yaw != 90 || pk.HeadYaw != 90 {
 		t.Fatalf("look action rotation = pitch %f yaw %f head %f", pk.Pitch, pk.Yaw, pk.HeadYaw)
 	}
-	if math.Abs(float64(pk.CameraOrientation[0]+1)) > 1e-5 {
+	wantX := -math.Cos(20 * math.Pi / 180)
+	wantY := math.Sin(20 * math.Pi / 180)
+	if math.Abs(float64(pk.CameraOrientation[0])-wantX) > 1e-5 || math.Abs(float64(pk.CameraOrientation[1])-wantY) > 1e-5 || math.Abs(float64(pk.CameraOrientation[2])) > 1e-5 {
 		t.Fatalf("unexpected camera orientation: %v", pk.CameraOrientation)
 	}
 
