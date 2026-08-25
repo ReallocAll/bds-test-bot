@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-gl/mathgl/mgl32"
 	"github.com/sandertv/gophertunnel/minecraft"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/login"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
@@ -271,10 +270,11 @@ func runInstance(
 				// BDS currently sends an initial one-shot publisher at 0,0,0, then
 				// repeatedly publishes the real player block position. Two identical
 				// consecutive publisher positions give us server-owned spawn evidence
-				// without trusting StartGame's Y≈32768 placeholder. StartGame X/Z
-				// remain precise, while the publisher block Y is converted back to
-				// PlayerAuthInput eye-height coordinates.
-				candidate := mgl32.Vec3{game.PlayerPosition[0], float32(y) + playerEyeHeight, game.PlayerPosition[2]}
+				// without trusting StartGame's Y≈32768 placeholder. The publisher
+				// is a server-owned BlockPos and may differ in X/Z after BDS resolves
+				// the real spawn. Seed all axes from it: block centres for X/Z and
+				// eye height for the PlayerAuthInput Y coordinate.
+				candidate := publisherEyePosition(p.Position)
 				if state.acceptPublisherPosition(candidate) {
 					if err := out.Emit("authoritative_position", map[string]any{
 						"position": []float32{candidate[0], candidate[1], candidate[2]},

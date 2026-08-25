@@ -99,6 +99,14 @@ func flightAbilityState(data protocol.AbilityData) (mayFly, flying bool) {
 	return mayFly, flying
 }
 
+func publisherEyePosition(position protocol.BlockPos) mgl32.Vec3 {
+	return mgl32.Vec3{
+		float32(position[0]) + 0.5,
+		float32(position[1]) + playerEyeHeight,
+		float32(position[2]) + 0.5,
+	}
+}
+
 func horizontalDistance(start, end mgl32.Vec3) float64 {
 	return math.Hypot(float64(end[0]-start[0]), float64(end[2]-start[2]))
 }

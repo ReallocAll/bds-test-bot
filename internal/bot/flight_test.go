@@ -101,6 +101,14 @@ func TestChunkFlyAcknowledgesPublisherSpawnBeforeMovement(t *testing.T) {
 	}
 }
 
+func TestPublisherEyePositionUsesAuthoritativeBlockPosition(t *testing.T) {
+	got := publisherEyePosition(protocol.BlockPos{266, 70, 159})
+	want := mgl32.Vec3{266.5, 70 + playerEyeHeight, 159.5}
+	if got != want {
+		t.Fatalf("publisher eye position = %v, want %v", got, want)
+	}
+}
+
 func TestChunkFlyClimbsThenTraversesAtSafeAltitude(t *testing.T) {
 	state := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
 	writer := &recordingPacketWriter{}
