@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ReallocAll/bds-test-bot/internal/action"
 	"github.com/go-gl/mathgl/mgl32"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
@@ -103,28 +104,22 @@ func authInputPacket(s *playerState, tick uint64, scenario string, headingYaw fl
 	}
 
 	return &packet.PlayerAuthInput{
-		Pitch:              pitch,
-		Yaw:                yaw,
-		Position:           position,
-		MoveVector:         moveVector,
-		HeadYaw:            headYaw,
-		InputData:          flags,
-		InputMode:          packet.InputModeMouse,
-		PlayMode:           packet.PlayModeScreen,
-		InteractionModel:   packet.InteractionModelCrosshair,
-		InteractPitch:      pitch,
-		InteractYaw:        yaw,
-		Tick:               tick,
-		Delta:              delta,
-		AnalogueMoveVector: moveVector,
-		CameraOrientation:  camera,
-		RawMoveVector:      moveVector,
+		Pitch: pitch, Yaw: yaw, Position: position, MoveVector: moveVector,
+		HeadYaw: headYaw, InputData: flags, InputMode: packet.InputModeMouse,
+		PlayMode: packet.PlayModeScreen, InteractionModel: packet.InteractionModelCrosshair,
+		InteractPitch: pitch, InteractYaw: yaw, Tick: tick, Delta: delta,
+		AnalogueMoveVector: moveVector, CameraOrientation: camera, RawMoveVector: moveVector,
 	}
 }
 
 func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, scenario string, headingYaw float32) error {
 	ticker := time.NewTicker(time.Second / 20)
 	defer ticker.Stop()
+
+	runner := action.NewRunner(newScenarioAction(scenario, state, headingYaw))
+	if err := runner.Start(ctx); err != nil {
+		return err
+	}
 
 	var tick uint64
 	for {
@@ -133,6 +128,9 @@ func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, s
 			return nil
 		case <-ticker.C:
 			tick++
+			if err := runner.Tick(ctx, action.TickContext{Tick: tick}); err != nil {
+				return err
+			}
 			if err := writer.WritePacket(authInputPacket(state, tick, scenario, headingYaw)); err != nil {
 				if ctx.Err() != nil {
 					return nil
