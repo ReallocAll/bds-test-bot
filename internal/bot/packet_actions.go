@@ -13,12 +13,17 @@ import (
 
 var ErrPacketWriterUnavailable = errors.New("packet writer unavailable")
 
-// PacketAction emits one protocol packet on its first tick and then completes.
+const packetActionCooldownTicks = 5
+
+// PacketAction emits one protocol packet and keeps the action alive briefly so
+// Bedrock has time to process the packet before the scenario runner advances to
+// the next protocol action. This avoids bursting stateful packets back-to-back.
 type PacketAction struct {
-	name   string
-	writer packetWriter
-	build  func() packet.Packet
-	sent   bool
+	name          string
+	writer        packetWriter
+	build         func() packet.Packet
+	sent          bool
+	cooldownTicks uint64
 }
 
 func NewPacketAction(name string, writer packetWriter, build func() packet.Packet) *PacketAction {
@@ -31,6 +36,9 @@ func (a *PacketAction) Start(context.Context) error { return nil }
 
 func (a *PacketAction) Tick(context.Context, action.TickContext) error {
 	if a.sent {
+		if a.cooldownTicks > 0 {
+			a.cooldownTicks--
+		}
 		return nil
 	}
 	if a.writer == nil {
@@ -40,10 +48,11 @@ func (a *PacketAction) Tick(context.Context, action.TickContext) error {
 		return err
 	}
 	a.sent = true
+	a.cooldownTicks = packetActionCooldownTicks
 	return nil
 }
 
-func (a *PacketAction) Done() bool { return a.sent }
+func (a *PacketAction) Done() bool { return a.sent && a.cooldownTicks == 0 }
 
 func NewChatAction(writer packetWriter, sourceName, message string) *PacketAction {
 	return NewPacketAction("chat", writer, func() packet.Packet {
