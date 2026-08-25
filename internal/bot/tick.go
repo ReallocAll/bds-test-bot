@@ -33,19 +33,19 @@ type inputControl struct {
 }
 
 type playerState struct {
-	mu                  sync.Mutex
-	position            mgl32.Vec3
-	positionReady       bool
-	publisherDriven     bool
-	pitch               float32
-	yaw                 float32
-	headYaw             float32
-	handledTeleport     bool
-	flyingConfirmed     bool
-	serverCorrections   uint64
-	serverTick          uint64
-	tickSynced          bool
-	control             inputControl
+	mu				sync.Mutex
+	position			mgl32.Vec3
+	positionReady		bool
+	publisherDriven		bool
+	pitch				float32
+	yaw				float32
+	headYaw				float32
+	handledTeleport		bool
+	flyingConfirmed		bool
+	serverCorrections	uint64
+	serverTick			uint64
+	tickSynced			bool
+	control				inputControl
 }
 
 type authInputSnapshot struct {
