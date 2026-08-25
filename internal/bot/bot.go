@@ -175,9 +175,9 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 				return stageError(ExitRuntime, "world", err)
 			}
 			if err := out.Emit("online", map[string]any{
-				"chunks_received": chunksReceived,
+				"chunks_received":  chunksReceived,
 				"packets_received": packetsReceived,
-				"uptime": time.Since(startedAt).Round(time.Millisecond).String(),
+				"uptime":           time.Since(startedAt).Round(time.Millisecond).String(),
 			}); err != nil {
 				return stageError(ExitRuntime, "output", err)
 			}
