@@ -305,6 +305,10 @@ func runInstance(
 				state.correct(p.Position, p.Rotation[0], p.Rotation[1], p.Rotation[1])
 				state.syncServerTick(p.Tick)
 			}
+		case *packet.UpdateAttributes:
+			if p.EntityRuntimeID == game.EntityRuntimeID {
+				state.syncServerTick(p.Tick)
+			}
 		case *packet.UpdateAbilities:
 			if cfg.Scenario == ScenarioChunkFly && (p.AbilityData.EntityUniqueID == game.EntityUniqueID || p.AbilityData.EntityUniqueID == 0) {
 				mayFly, flying := flightAbilityState(p.AbilityData)
