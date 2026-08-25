@@ -107,8 +107,8 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 	}
 
 	if err := conn.WritePacket(&packet.RequestChunkRadius{
-		ChunkRadius:    uint32(cfg.ChunkRadius),
-		MaxChunkRadius: uint32(cfg.ChunkRadius),
+		ChunkRadius:    cfg.ChunkRadius,
+		MaxChunkRadius: uint8(cfg.ChunkRadius),
 	}); err != nil {
 		return stageError(ExitRuntime, "chunk-radius", err)
 	}
