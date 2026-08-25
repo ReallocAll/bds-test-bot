@@ -4,6 +4,7 @@ package scenario
 type Runner struct {
 	steps    []Step
 	index    int
+	repeat   int
 	current  Action
 	factory  ActionFactory
 }
@@ -27,11 +28,16 @@ func (r *Runner) Tick() bool {
 			if r.index >= len(r.steps) {
 				return false
 			}
-			action, err := r.factory(r.steps[r.index])
+
+			step := r.steps[r.index]
+			action, err := r.factory(step)
 			if err != nil {
 				return false
 			}
 			r.current = action
+			if r.repeat == 0 {
+				r.repeat = step.Repeat
+			}
 		}
 
 		if r.current.Tick() {
@@ -39,6 +45,12 @@ func (r *Runner) Tick() bool {
 		}
 
 		r.current = nil
+		if r.repeat > 1 {
+			r.repeat--
+			continue
+		}
+
+		r.repeat = 0
 		r.index++
 	}
 }
