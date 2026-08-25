@@ -7,13 +7,12 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sandertv/gophertunnel/minecraft"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/login"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
-
-	"github.com/ReallocAll/bds-test-bot/internal/output"
 )
 
 const (
@@ -31,6 +30,10 @@ const (
 	rakNetCloseGrace = 2 * time.Second
 )
 
+type eventEmitter interface {
+	Emit(string, map[string]any) error
+}
+
 type StageError struct {
 	Code  int
 	Stage string
@@ -47,17 +50,42 @@ func stageError(code int, stage string, err error) error {
 	return &StageError{Code: code, Stage: stage, Err: err}
 }
 
-func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
+type authInputWriter struct {
+	writer packetWriter
+	count  *atomic.Uint64
+}
+
+func (w authInputWriter) WritePacket(pk packet.Packet) error {
+	if err := w.writer.WritePacket(pk); err != nil {
+		return err
+	}
+	w.count.Add(1)
+	return nil
+}
+
+func runInstance(
+	ctx context.Context,
+	cfg Config,
+	name string,
+	out eventEmitter,
+	stats *InstanceStats,
+	online chan<- InstanceStats,
+) error {
 	address := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
-	startedAt := time.Now()
-	if err := out.Emit("connecting", map[string]any{"address": address, "name": cfg.Name}); err != nil {
+	if stats.StartedAt.IsZero() {
+		stats.StartedAt = time.Now()
+	}
+	var authInputs atomic.Uint64
+	defer func() { stats.AuthInputsSent = authInputs.Load() }()
+
+	if err := out.Emit("connecting", map[string]any{"address": address, "name": name}); err != nil {
 		return stageError(ExitRuntime, "output", err)
 	}
 
 	startGameSeen := make(chan struct{})
 	var startGameOnce sync.Once
 	dialer := minecraft.Dialer{
-		IdentityData: login.IdentityData{DisplayName: cfg.Name},
+		IdentityData: login.IdentityData{DisplayName: name},
 		PacketFunc: func(header packet.Header, _ []byte, _, _ net.Addr) {
 			if header.PacketID == packet.IDStartGame {
 				startGameOnce.Do(func() { close(startGameSeen) })
@@ -135,32 +163,38 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 	tickCtx, cancelTick := context.WithCancel(ctx)
 	defer cancelTick()
 	tickErr := make(chan error, 1)
-	go func() { tickErr <- runTickLoop(tickCtx, conn, state) }()
+	writer := authInputWriter{writer: conn, count: &authInputs}
+	go func() { tickErr <- runTickLoop(tickCtx, writer, state) }()
 
 	worldDeadline := time.Now().Add(cfg.SpawnTimeout)
 	if err := conn.SetReadDeadline(worldDeadline); err != nil {
 		return stageError(ExitRuntime, "world", err)
 	}
 
-	var packetsReceived uint64
-	var chunksReceived uint64
 	chunkRadiusReady := false
-	online := false
+	onlineState := false
 	for {
 		pk, readErr := conn.ReadPacket()
 		if readErr != nil {
 			cancelTick()
 			if ctx.Err() != nil {
 				<-gracefulCloseDone
-				_ = out.Emit("disconnected", map[string]any{"uptime": time.Since(startedAt).Round(time.Millisecond).String()})
+				stats.AuthInputsSent = authInputs.Load()
+				_ = out.Emit("disconnected", map[string]any{
+					"uptime":            time.Since(stats.StartedAt).Round(time.Millisecond).String(),
+					"packets_received":   stats.PacketsReceived,
+					"chunks_received":    stats.ChunksReceived,
+					"auth_inputs_sent":   stats.AuthInputsSent,
+					"was_online":         onlineState,
+				})
 				return nil
 			}
-			if !online && time.Now().After(worldDeadline) {
+			if !onlineState && time.Now().After(worldDeadline) {
 				return stageError(ExitSpawn, "world", fmt.Errorf("timed out waiting for chunk radius and first chunk: %w", readErr))
 			}
 			return stageError(ExitRuntime, "read", readErr)
 		}
-		packetsReceived++
+		stats.PacketsReceived++
 
 		switch p := pk.(type) {
 		case *packet.ChunkRadiusUpdated:
@@ -169,11 +203,15 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 				return stageError(ExitRuntime, "output", err)
 			}
 		case *packet.LevelChunk:
-			chunksReceived++
-			if err := out.Emit("chunk_received", map[string]any{
-				"x": p.Position[0], "z": p.Position[1], "total": chunksReceived,
-			}); err != nil {
-				return stageError(ExitRuntime, "output", err)
+			stats.ChunksReceived++
+			// Initial chunk streaming becomes very noisy for larger fleets. Keep
+			// representative evidence while retaining the exact per-bot counter.
+			if stats.ChunksReceived <= 3 || stats.ChunksReceived%100 == 0 {
+				if err := out.Emit("chunk_received", map[string]any{
+					"x": p.Position[0], "z": p.Position[1], "total": stats.ChunksReceived,
+				}); err != nil {
+					return stageError(ExitRuntime, "output", err)
+				}
 			}
 		case *packet.MovePlayer:
 			if p.EntityRuntimeID == game.EntityRuntimeID {
@@ -185,17 +223,26 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 			}
 		}
 
-		if !online && chunkRadiusReady && chunksReceived > 0 {
-			online = true
+		if !onlineState && chunkRadiusReady && stats.ChunksReceived > 0 {
+			onlineState = true
+			stats.OnlineAt = time.Now()
+			stats.AuthInputsSent = authInputs.Load()
 			if err := conn.SetReadDeadline(time.Time{}); err != nil {
 				return stageError(ExitRuntime, "world", err)
 			}
 			if err := out.Emit("online", map[string]any{
-				"chunks_received":  chunksReceived,
-				"packets_received": packetsReceived,
-				"uptime":           time.Since(startedAt).Round(time.Millisecond).String(),
+				"chunks_received":  stats.ChunksReceived,
+				"packets_received": stats.PacketsReceived,
+				"auth_inputs_sent": stats.AuthInputsSent,
+				"uptime":           time.Since(stats.StartedAt).Round(time.Millisecond).String(),
 			}); err != nil {
 				return stageError(ExitRuntime, "output", err)
+			}
+			if online != nil {
+				select {
+				case online <- *stats:
+				case <-ctx.Done():
+				}
 			}
 		}
 
@@ -208,6 +255,7 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 				<-gracefulCloseDone
 				return nil
 			}
+			return stageError(ExitRuntime, "tick", errors.New("tick loop exited unexpectedly"))
 		default:
 		}
 	}
