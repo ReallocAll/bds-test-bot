@@ -1,0 +1,14 @@
+name: scenario-smoke
+steps:
+  - action: wait
+    ticks: 20
+  - action: look
+    ticks: 20
+    yaw: 90
+    pitch: -10
+  - action: jump
+    ticks: 2
+    repeat: 2
+  - action: move
+    forward: 1
+    speed: 0.18
