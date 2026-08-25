@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"math"
 	"sync/atomic"
 	"testing"
 
@@ -92,8 +93,8 @@ func TestChunkFlyAcknowledgesPublisherSpawnBeforeMovement(t *testing.T) {
 	if !climb.InputData.Load(packet.InputFlagAscend) || !climb.InputData.Load(packet.InputFlagWantUp) {
 		t.Fatalf("post-ack climb missing ascent flags: %+v", climb.InputData)
 	}
-	if climb.Delta != (mgl32.Vec3{}) || climb.MoveVector != (mgl32.Vec2{}) {
-		t.Fatalf("post-ack climb must be server-driven with zero client delta: %+v", climb)
+	if climb.Delta[1] <= 0 || climb.MoveVector != (mgl32.Vec2{}) {
+		t.Fatalf("post-ack climb did not include client prediction: %+v", climb)
 	}
 	if state.acceptPublisherPosition(mgl32.Vec3{12.5, fly.targetY, -7.5}) {
 		t.Fatal("publisher seeding must not overwrite an already-ready predicted position")
@@ -121,11 +122,13 @@ func TestPublisherObservationDrivesAuthoritativeCruisePosition(t *testing.T) {
 		t.Fatal("publisher position was not observed")
 	}
 	input := authInputPacket(state, 7)
-	if input.Position != serverPos {
-		t.Fatalf("auth input position = %v, want server position %v", input.Position, serverPos)
+	wantPosition := serverPos
+	wantPosition[2] += chunkFlyStepPerTick
+	if input.Position != wantPosition {
+		t.Fatalf("auth input position = %v, want predicted position %v", input.Position, wantPosition)
 	}
-	if input.MoveVector != (mgl32.Vec2{0, 1}) || input.Delta != (mgl32.Vec3{}) {
-		t.Fatalf("server-driven cruise = move %v delta %v", input.MoveVector, input.Delta)
+	if input.MoveVector != (mgl32.Vec2{0, 1}) || math.Abs(float64(input.Delta[2]-chunkFlyStepPerTick)) > 1e-5 {
+		t.Fatalf("client-predicted cruise = move %v delta %v", input.MoveVector, input.Delta)
 	}
 }
 
@@ -142,19 +145,17 @@ func TestChunkFlyClimbsThenTraversesAtSafeAltitude(t *testing.T) {
 	if !climb.InputData.Load(packet.InputFlagAscend) || !climb.InputData.Load(packet.InputFlagWantUp) {
 		t.Fatalf("climb packet missing flight ascent flags: %+v", climb.InputData)
 	}
-	if climb.Delta != (mgl32.Vec3{}) || climb.MoveVector != (mgl32.Vec2{}) {
-		t.Fatalf("climb packet must carry input intent without client prediction: delta %v move %v", climb.Delta, climb.MoveVector)
+	if climb.Delta[1] <= 0 || climb.MoveVector != (mgl32.Vec2{}) {
+		t.Fatalf("climb packet = delta %v move %v", climb.Delta, climb.MoveVector)
 	}
 
-	if !state.observePublisherPosition(mgl32.Vec3{0, fly.targetY, 0}) {
-		t.Fatal("server publisher update did not advance flight state")
-	}
+	state.update(mgl32.Vec3{0, fly.targetY, 0}, 0, 0, 0, false)
 	cruise := authInputPacket(state, 2)
 	if cruise.MoveVector != (mgl32.Vec2{0, 1}) {
 		t.Fatalf("cruise move vector = %v", cruise.MoveVector)
 	}
-	if cruise.Delta != (mgl32.Vec3{}) {
-		t.Fatalf("server-driven cruise must not fabricate client delta: %v", cruise.Delta)
+	if math.Abs(float64(cruise.Delta[2]-chunkFlyStepPerTick)) > 1e-5 || math.Abs(float64(cruise.Delta[1])) > 1e-5 {
+		t.Fatalf("cruise delta = %v", cruise.Delta)
 	}
 }
 
@@ -172,9 +173,8 @@ func TestChunkFlyResumesFromServerCorrection(t *testing.T) {
 	if input.Position[0] != 10 || input.Position[2] != 20 {
 		t.Fatalf("flight did not resume from corrected horizontal position: %v", input.Position)
 	}
-	if input.Delta != (mgl32.Vec3{}) || input.MoveVector != (mgl32.Vec2{}) ||
-		!input.InputData.Load(packet.InputFlagAscend) || !input.InputData.Load(packet.InputFlagWantUp) {
-		t.Fatalf("corrected flight should recover altitude through server-driven ascent intent: %+v", input)
+	if input.Delta[1] <= 0 || input.MoveVector != (mgl32.Vec2{}) {
+		t.Fatalf("corrected flight should recover altitude before horizontal traversal: %+v", input)
 	}
 	_, _, corrections := state.telemetrySnapshot()
 	if corrections != 1 {
@@ -187,8 +187,8 @@ func TestServerTickSyncDrivesNextAuthInputTick(t *testing.T) {
 	if got := state.nextInputTick(); got != 0 {
 		t.Fatalf("initial input tick = %d, want 0", got)
 	}
-	if got := state.nextInputTick(); got != 0 {
-		t.Fatalf("unsynced input tick = %d, want neutral 0", got)
+	if got := state.nextInputTick(); got != 1 {
+		t.Fatalf("second input tick = %d, want 1", got)
 	}
 	state.syncServerTick(240)
 	next, synced := state.tickSnapshot()

@@ -154,13 +154,9 @@ func (s *playerState) syncServerTick(serverTick uint64) {
 func (s *playerState) nextInputTick() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// PlayerAuthInput.Tick is a server tick, not a client-local frame
-	// counter. Until a packet carrying a server tick establishes the
-	// clock, keep the protocol's neutral zero value rather than sending
-	// an ever-growing unrelated tick sequence.
-	if !s.tickSynced {
-		return 0
-	}
+	// PlayerAuthInput carries the client's monotonically advancing movement
+	// frame id. Server packets may move this clock forward when they refer to
+	// a later prediction, but initial movement starts at frame zero.
 	tick := s.serverTick
 	s.serverTick++
 	return tick
@@ -251,16 +247,29 @@ func (s *playerState) inputSnapshot() authInputSnapshot {
 		snapshot.moveVector = mgl32.Vec2{}
 	} else if s.control.fly {
 		if !s.flyingConfirmed || !s.positionReady {
-			// StartGame may contain the Bedrock placeholder altitude around
-			// Y=32768. Wait for stable server-owned publisher coordinates and
-			// a flight acknowledgement before sending movement intent.
+			// Never predict from StartGame's temporary Y≈32768 position. The
+			// first valid publisher position seeds the movement history below.
 			snapshot.moveVector = mgl32.Vec2{}
-		} else if s.position[1] < s.control.flightTargetY-0.75 {
-			// Server-authoritative movement is driven by input state. Do not
-			// fabricate a client position/delta for flight: request ascent and
-			// let BDS advance the player, then consume publisher feedback.
-			snapshot.moveVector = mgl32.Vec2{}
-			snapshot.verticalDirection = 1
+		} else {
+			diff := s.control.flightTargetY - s.position[1]
+			if float32(math.Abs(float64(diff))) > 0.05 {
+				// Bedrock server-authoritative movement is still client-predicted:
+				// send the input state together with the resulting predicted
+				// position/delta for this movement frame.
+				snapshot.moveVector = mgl32.Vec2{}
+				step := s.control.verticalStep
+				if step <= 0 || float32(math.Abs(float64(diff))) < step {
+					step = float32(math.Abs(float64(diff)))
+				}
+				if diff < 0 {
+					step = -step
+				}
+				snapshot.delta[1] = step
+				snapshot.verticalDirection = step
+				s.position[1] += step
+			} else {
+				applyHorizontalMovement(s, &snapshot, s.control.moveStep)
+			}
 		}
 	} else if snapshot.moveVector != (mgl32.Vec2{}) && s.control.moveStep != 0 {
 		applyHorizontalMovement(s, &snapshot, s.control.moveStep)
@@ -389,6 +398,13 @@ func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, c
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+			// Do not establish PlayerAuthInput movement history using the
+			// temporary StartGame altitude. RequestAbility is already sent from
+			// FlyAction.Start; PlayerAuthInput begins only after BDS publishes a
+			// stable, valid player position that we can acknowledge.
+			if cfg.Scenario == ScenarioChunkFly && !state.positionReadySnapshot() {
+				continue
+			}
 			tick := state.nextInputTick()
 			if err := runner.Tick(ctx, action.TickContext{Tick: tick}); err != nil {
 				return err
