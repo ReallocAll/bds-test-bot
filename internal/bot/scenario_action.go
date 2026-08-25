@@ -8,10 +8,10 @@ import (
 	"github.com/go-gl/mathgl/mgl32"
 )
 
-func newScenarioAction(cfg Config, state *playerState, heading float32) (action.Action, error) {
+func newScenarioAction(cfg Config, state *playerState, heading float32, writer packetWriter, botName string, entityRuntimeID uint64) (action.Action, error) {
 	if cfg.ScenarioDefinition != nil {
 		return scenarioengine.NewRunner(*cfg.ScenarioDefinition, func(step scenarioengine.Step) (action.Action, error) {
-			return newConfiguredAction(step, state, heading)
+			return newConfiguredAction(step, state, heading, writer, botName, entityRuntimeID)
 		}), nil
 	}
 
@@ -25,7 +25,7 @@ func newScenarioAction(cfg Config, state *playerState, heading float32) (action.
 	}
 }
 
-func newConfiguredAction(step scenarioengine.Step, state *playerState, heading float32) (action.Action, error) {
+func newConfiguredAction(step scenarioengine.Step, state *playerState, heading float32, writer packetWriter, botName string, entityRuntimeID uint64) (action.Action, error) {
 	switch step.Action {
 	case scenarioengine.ActionIdle:
 		if step.Ticks > 0 {
@@ -56,6 +56,12 @@ func newConfiguredAction(step scenarioengine.Step, state *playerState, heading f
 		return NewLookAction(state, pitch, yaw, uint64(step.Ticks)), nil
 	case scenarioengine.ActionJump:
 		return NewJumpAction(state, uint64(step.Ticks)), nil
+	case scenarioengine.ActionChat:
+		return NewChatAction(writer, botName, step.Message), nil
+	case scenarioengine.ActionCommand:
+		return NewCommandAction(writer, step.Command), nil
+	case scenarioengine.ActionSwing:
+		return NewSwingAction(writer, entityRuntimeID), nil
 	default:
 		return nil, fmt.Errorf("unsupported configured action %q", step.Action)
 	}
