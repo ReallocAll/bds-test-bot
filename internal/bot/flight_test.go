@@ -3,7 +3,6 @@ package bot
 import (
 	"context"
 	"math"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -50,44 +49,45 @@ func TestChunkFlyRequestsServerAbilityBeforePredictingMovement(t *testing.T) {
 	}
 }
 
-func TestChunkFlyResetsOutOfRangeSpawnAltitude(t *testing.T) {
-	state := newPlayerState(mgl32.Vec3{12, 32769.625, -8}, 0, 0)
+func TestChunkFlyWaitsForAuthoritativePublisherPosition(t *testing.T) {
+	state := newPlayerState(mgl32.Vec3{12.5, 32769.625, -7.5}, 0, 0)
 	writer := &recordingPacketWriter{}
 	fly := NewChunkFlyAction(state, writer, 0)
-	if !fly.resetAltitude {
-		t.Fatal("out-of-range spawn altitude must request a server-authoritative reset")
+	if state.positionReadySnapshot() {
+		t.Fatal("placeholder StartGame altitude must not be position-ready")
 	}
-	if fly.targetY != chunkFlyMaximumAltitude {
-		t.Fatalf("target altitude = %f, want %f", fly.targetY, chunkFlyMaximumAltitude)
+	if fly.targetY != chunkFlyMinimumAltitude {
+		t.Fatalf("placeholder target altitude = %f, want %f", fly.targetY, chunkFlyMinimumAltitude)
 	}
 	if err := fly.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(writer.packets) != 2 {
-		t.Fatalf("startup packets = %d, want teleport + flight request", len(writer.packets))
+	if len(writer.packets) != 1 {
+		t.Fatalf("startup packets = %d, want only flying request", len(writer.packets))
 	}
-	command, ok := writer.packets[0].(*packet.CommandRequest)
-	if !ok {
-		t.Fatalf("altitude reset packet type = %T", writer.packets[0])
-	}
-	if !strings.Contains(command.CommandLine, "tp @s ~ 256 ~") {
-		t.Fatalf("altitude reset command = %q", command.CommandLine)
-	}
-	if command.CommandOrigin.Origin != protocol.CommandOriginPlayer || command.Version != "latest" {
-		t.Fatalf("unexpected altitude reset command metadata: %+v", command)
-	}
-	if request, ok := writer.packets[1].(*packet.RequestAbility); !ok || request.Ability != packet.AbilityFlying {
-		t.Fatalf("second startup packet = %#v, want flying request", writer.packets[1])
+	if request, ok := writer.packets[0].(*packet.RequestAbility); !ok || request.Ability != packet.AbilityFlying {
+		t.Fatalf("startup packet = %#v, want flying request", writer.packets[0])
 	}
 
-	position, _, _ := state.telemetrySnapshot()
-	if position != (mgl32.Vec3{12, chunkFlyMaximumAltitude, -8}) {
-		t.Fatalf("prediction was not rebased to altitude reset target: %v", position)
-	}
 	state.setFlyingConfirmed(true)
-	cruise := authInputPacket(state, 1)
-	if cruise.MoveVector != (mgl32.Vec2{0, 1}) || cruise.Delta[1] != 0 {
-		t.Fatalf("rebased flight did not enter horizontal cruise: %+v", cruise)
+	blocked := authInputPacket(state, 1)
+	if blocked.MoveVector != (mgl32.Vec2{}) || blocked.Delta != (mgl32.Vec3{}) {
+		t.Fatalf("placeholder position generated movement before publisher evidence: %+v", blocked)
+	}
+
+	publisherPosition := mgl32.Vec3{12.5, 68 + playerEyeHeight, -7.5}
+	if !state.acceptPublisherPosition(publisherPosition) {
+		t.Fatal("stable server publisher position was not accepted")
+	}
+	if !state.positionReadySnapshot() {
+		t.Fatal("publisher position did not make movement position-ready")
+	}
+	if state.acceptPublisherPosition(mgl32.Vec3{12.5, 70 + playerEyeHeight, -7.5}) {
+		t.Fatal("publisher recovery must only seed the unknown initial position once")
+	}
+	climb := authInputPacket(state, 2)
+	if climb.Delta[1] <= 0 || climb.MoveVector != (mgl32.Vec2{}) {
+		t.Fatalf("publisher-seeded flight should climb before traversal: %+v", climb)
 	}
 }
 
