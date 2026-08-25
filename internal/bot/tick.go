@@ -121,6 +121,17 @@ func (s *playerState) acceptPublisherPosition(position mgl32.Vec3) bool {
 	return true
 }
 
+func (s *playerState) observePublisherPosition(position mgl32.Vec3) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.positionReady || !validPlayerPositionY(position[1]) {
+		return false
+	}
+	changed := s.position != position
+	s.position = position
+	return changed
+}
+
 func (s *playerState) positionReadySnapshot() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -234,29 +245,15 @@ func (s *playerState) inputSnapshot() authInputSnapshot {
 	} else if s.control.fly {
 		if !s.flyingConfirmed || !s.positionReady {
 			// StartGame may contain the Bedrock placeholder altitude around
-			// Y=32768. Do not fabricate movement from it. Wait until BDS has
-			// acknowledged flying and published a stable authoritative position.
+			// Y=32768. Wait for stable server-owned publisher coordinates and
+			// a flight acknowledgement before sending movement intent.
 			snapshot.moveVector = mgl32.Vec2{}
-		} else {
-			diff := s.control.flightTargetY - s.position[1]
-			if float32(math.Abs(float64(diff))) > 0.05 {
-				snapshot.moveVector = mgl32.Vec2{}
-				step := s.control.verticalStep
-				if step <= 0 {
-					step = float32(math.Abs(float64(diff)))
-				}
-				if float32(math.Abs(float64(diff))) < step {
-					step = float32(math.Abs(float64(diff)))
-				}
-				if diff < 0 {
-					step = -step
-				}
-				snapshot.delta[1] = step
-				snapshot.verticalDirection = step
-				s.position[1] += step
-			} else {
-				applyHorizontalMovement(s, &snapshot, s.control.moveStep)
-			}
+		} else if s.position[1] < s.control.flightTargetY-0.75 {
+			// Server-authoritative movement is driven by input state. Do not
+			// fabricate a client position/delta for flight: request ascent and
+			// let BDS advance the player, then consume publisher feedback.
+			snapshot.moveVector = mgl32.Vec2{}
+			snapshot.verticalDirection = 1
 		}
 	} else if snapshot.moveVector != (mgl32.Vec2{}) && s.control.moveStep != 0 {
 		applyHorizontalMovement(s, &snapshot, s.control.moveStep)

@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"math"
 	"sync/atomic"
 	"testing"
 
@@ -93,8 +92,8 @@ func TestChunkFlyAcknowledgesPublisherSpawnBeforeMovement(t *testing.T) {
 	if !climb.InputData.Load(packet.InputFlagAscend) || !climb.InputData.Load(packet.InputFlagWantUp) {
 		t.Fatalf("post-ack climb missing ascent flags: %+v", climb.InputData)
 	}
-	if climb.Delta[1] <= 0 || climb.MoveVector != (mgl32.Vec2{}) {
-		t.Fatalf("post-ack climb did not resume prediction: %+v", climb)
+	if climb.Delta != (mgl32.Vec3{}) || climb.MoveVector != (mgl32.Vec2{}) {
+		t.Fatalf("post-ack climb must be server-driven with zero client delta: %+v", climb)
 	}
 	if state.acceptPublisherPosition(mgl32.Vec3{12.5, fly.targetY, -7.5}) {
 		t.Fatal("publisher seeding must not overwrite an already-ready predicted position")
@@ -106,6 +105,27 @@ func TestPublisherEyePositionUsesAuthoritativeBlockPosition(t *testing.T) {
 	want := mgl32.Vec3{266.5, 70 + playerEyeHeight, 159.5}
 	if got != want {
 		t.Fatalf("publisher eye position = %v, want %v", got, want)
+	}
+}
+
+func TestPublisherObservationDrivesAuthoritativeCruisePosition(t *testing.T) {
+	state := newPlayerState(mgl32.Vec3{4.5, 80, 8.5}, 0, 0)
+	writer := &recordingPacketWriter{}
+	fly := NewChunkFlyAction(state, writer, 0)
+	if err := fly.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state.setFlyingConfirmed(true)
+	serverPos := mgl32.Vec3{7.5, fly.targetY, 11.5}
+	if !state.observePublisherPosition(serverPos) {
+		t.Fatal("publisher position was not observed")
+	}
+	input := authInputPacket(state, 7)
+	if input.Position != serverPos {
+		t.Fatalf("auth input position = %v, want server position %v", input.Position, serverPos)
+	}
+	if input.MoveVector != (mgl32.Vec2{0, 1}) || input.Delta != (mgl32.Vec3{}) {
+		t.Fatalf("server-driven cruise = move %v delta %v", input.MoveVector, input.Delta)
 	}
 }
 
@@ -122,17 +142,19 @@ func TestChunkFlyClimbsThenTraversesAtSafeAltitude(t *testing.T) {
 	if !climb.InputData.Load(packet.InputFlagAscend) || !climb.InputData.Load(packet.InputFlagWantUp) {
 		t.Fatalf("climb packet missing flight ascent flags: %+v", climb.InputData)
 	}
-	if climb.Delta[1] <= 0 || climb.MoveVector != (mgl32.Vec2{}) {
-		t.Fatalf("climb packet = delta %v move %v", climb.Delta, climb.MoveVector)
+	if climb.Delta != (mgl32.Vec3{}) || climb.MoveVector != (mgl32.Vec2{}) {
+		t.Fatalf("climb packet must carry input intent without client prediction: delta %v move %v", climb.Delta, climb.MoveVector)
 	}
 
-	state.update(mgl32.Vec3{0, fly.targetY, 0}, 0, 0, 0, false)
+	if !state.observePublisherPosition(mgl32.Vec3{0, fly.targetY, 0}) {
+		t.Fatal("server publisher update did not advance flight state")
+	}
 	cruise := authInputPacket(state, 2)
 	if cruise.MoveVector != (mgl32.Vec2{0, 1}) {
 		t.Fatalf("cruise move vector = %v", cruise.MoveVector)
 	}
-	if math.Abs(float64(cruise.Delta[2]-chunkFlyStepPerTick)) > 1e-5 || math.Abs(float64(cruise.Delta[1])) > 1e-5 {
-		t.Fatalf("cruise delta = %v", cruise.Delta)
+	if cruise.Delta != (mgl32.Vec3{}) {
+		t.Fatalf("server-driven cruise must not fabricate client delta: %v", cruise.Delta)
 	}
 }
 
@@ -150,8 +172,9 @@ func TestChunkFlyResumesFromServerCorrection(t *testing.T) {
 	if input.Position[0] != 10 || input.Position[2] != 20 {
 		t.Fatalf("flight did not resume from corrected horizontal position: %v", input.Position)
 	}
-	if input.Delta[1] <= 0 || input.MoveVector != (mgl32.Vec2{}) {
-		t.Fatalf("corrected flight should recover altitude before horizontal traversal: %+v", input)
+	if input.Delta != (mgl32.Vec3{}) || input.MoveVector != (mgl32.Vec2{}) ||
+		!input.InputData.Load(packet.InputFlagAscend) || !input.InputData.Load(packet.InputFlagWantUp) {
+		t.Fatalf("corrected flight should recover altitude through server-driven ascent intent: %+v", input)
 	}
 	_, _, corrections := state.telemetrySnapshot()
 	if corrections != 1 {
@@ -225,7 +248,10 @@ func TestAuthInputWriterCountsVerticalFlightMovement(t *testing.T) {
 		movementCount: &movement,
 		actionCount:   &actions,
 	}
-	if err := writer.WritePacket(&packet.PlayerAuthInput{Delta: mgl32.Vec3{0, 0.4, 0}}); err != nil {
+	flags := protocol.NewInputFlags(packet.InputFlagCount)
+	flags.Set(packet.InputFlagAscend)
+	flags.Set(packet.InputFlagWantUp)
+	if err := writer.WritePacket(&packet.PlayerAuthInput{InputData: flags}); err != nil {
 		t.Fatal(err)
 	}
 	if auth.Load() != 1 || movement.Load() != 1 || actions.Load() != 0 {
