@@ -9,15 +9,16 @@ import (
 )
 
 type InstanceStats struct {
-	Name            string
-	Index           int
-	Scenario        string
-	StartedAt       time.Time
-	OnlineAt        time.Time
-	EndedAt         time.Time
-	PacketsReceived uint64
-	ChunksReceived  uint64
-	AuthInputsSent  uint64
+	Name               string
+	Index              int
+	Scenario           string
+	StartedAt          time.Time
+	OnlineAt           time.Time
+	EndedAt            time.Time
+	PacketsReceived    uint64
+	ChunksReceived     uint64
+	AuthInputsSent     uint64
+	MovementInputsSent uint64
 }
 
 type instanceResult struct {
@@ -78,7 +79,7 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 		}
 		launched++
 		go func() {
-			err := runInstance(fleetCtx, cfg, name, scoped, stats, onlineCh)
+			err := runInstance(fleetCtx, cfg, name, index+1, scoped, stats, onlineCh)
 			stats.EndedAt = time.Now()
 			resultCh <- instanceResult{stats: *stats, err: err}
 		}()
@@ -88,12 +89,13 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 	recordOnline := func(stats InstanceStats) error {
 		onlineCount++
 		return out.Emit("fleet_progress", map[string]any{
-			"online":           onlineCount,
-			"count":            cfg.Count,
-			"bot":              stats.Name,
-			"index":            stats.Index,
-			"chunks_received":  stats.ChunksReceived,
-			"auth_inputs_sent": stats.AuthInputsSent,
+			"online":               onlineCount,
+			"count":                cfg.Count,
+			"bot":                  stats.Name,
+			"index":                stats.Index,
+			"chunks_received":      stats.ChunksReceived,
+			"auth_inputs_sent":     stats.AuthInputsSent,
+			"movement_inputs_sent": stats.MovementInputsSent,
 		})
 	}
 
@@ -208,19 +210,22 @@ func finishFleet(
 	var packets uint64
 	var chunks uint64
 	var authInputs uint64
+	var movementInputs uint64
 	for _, result := range results {
 		stats := result.stats
 		packets += stats.PacketsReceived
 		chunks += stats.ChunksReceived
 		authInputs += stats.AuthInputsSent
+		movementInputs += stats.MovementInputsSent
 		fields := map[string]any{
-			"bot":              stats.Name,
-			"index":            stats.Index,
-			"scenario":         stats.Scenario,
-			"online":           !stats.OnlineAt.IsZero(),
-			"packets_received": stats.PacketsReceived,
-			"chunks_received":  stats.ChunksReceived,
-			"auth_inputs_sent": stats.AuthInputsSent,
+			"bot":                  stats.Name,
+			"index":                stats.Index,
+			"scenario":             stats.Scenario,
+			"online":               !stats.OnlineAt.IsZero(),
+			"packets_received":     stats.PacketsReceived,
+			"chunks_received":      stats.ChunksReceived,
+			"auth_inputs_sent":     stats.AuthInputsSent,
+			"movement_inputs_sent": stats.MovementInputsSent,
 		}
 		if !stats.EndedAt.IsZero() {
 			fields["uptime"] = stats.EndedAt.Sub(stats.StartedAt).Round(time.Millisecond).String()
@@ -240,13 +245,14 @@ func finishFleet(
 		reason = "signal"
 	}
 	fields := map[string]any{
-		"reason":            reason,
-		"launched":          launched,
-		"online":            onlineCount,
-		"packets_received":  packets,
-		"chunks_received":   chunks,
-		"auth_inputs_sent":  authInputs,
-		"graceful_shutdown": firstErr == nil,
+		"reason":               reason,
+		"launched":             launched,
+		"online":               onlineCount,
+		"packets_received":     packets,
+		"chunks_received":      chunks,
+		"auth_inputs_sent":     authInputs,
+		"movement_inputs_sent": movementInputs,
+		"graceful_shutdown":    firstErr == nil,
 	}
 	if firstErr != nil {
 		fields["error"] = firstErr.Error()

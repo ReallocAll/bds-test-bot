@@ -18,6 +18,7 @@ const (
 	DefaultCount       = 1
 	DefaultChunkRadius = 8
 	ScenarioIdle       = "idle"
+	ScenarioChunkWalk  = "chunk-walk"
 )
 
 var (
@@ -95,8 +96,10 @@ func ParseConfig(args []string) (Config, error) {
 	if cfg.NamePrefix == "" {
 		return Config{}, errors.New("name-prefix must not be empty")
 	}
-	if cfg.Scenario != ScenarioIdle {
-		return Config{}, fmt.Errorf("unsupported scenario %q (currently supported: %s)", cfg.Scenario, ScenarioIdle)
+	switch cfg.Scenario {
+	case ScenarioIdle, ScenarioChunkWalk:
+	default:
+		return Config{}, fmt.Errorf("unsupported scenario %q (supported: %s, %s)", cfg.Scenario, ScenarioIdle, ScenarioChunkWalk)
 	}
 	if radius < 1 || radius > 96 {
 		return Config{}, fmt.Errorf("chunk-radius must be in range 1..96: %d", radius)

@@ -50,6 +50,16 @@ func TestParseConfigLegacyName(t *testing.T) {
 	}
 }
 
+func TestParseConfigAcceptsChunkWalk(t *testing.T) {
+	cfg, err := ParseConfig([]string{"--scenario", ScenarioChunkWalk})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Scenario != ScenarioChunkWalk {
+		t.Fatalf("scenario = %q, want %q", cfg.Scenario, ScenarioChunkWalk)
+	}
+}
+
 func TestParseConfigRejectsInvalidPort(t *testing.T) {
 	if _, err := ParseConfig([]string{"--port", "70000"}); err == nil {
 		t.Fatal("expected invalid port error")
@@ -63,7 +73,7 @@ func TestParseConfigRejectsLegacyNameForFleet(t *testing.T) {
 }
 
 func TestParseConfigRejectsUnsupportedScenario(t *testing.T) {
-	if _, err := ParseConfig([]string{"--scenario", "chunk-walk"}); err == nil {
-		t.Fatal("expected chunk-walk to remain gated until idle fleet validation passes")
+	if _, err := ParseConfig([]string{"--scenario", "combat"}); err == nil {
+		t.Fatal("expected unsupported scenario error")
 	}
 }
