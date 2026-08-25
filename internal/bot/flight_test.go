@@ -73,6 +73,16 @@ func TestChunkFlyResetsOutOfRangeSpawnAltitude(t *testing.T) {
 	if request, ok := writer.packets[1].(*packet.RequestAbility); !ok || request.Ability != packet.AbilityFlying {
 		t.Fatalf("second startup packet = %#v, want flying request", writer.packets[1])
 	}
+
+	position, _, _ := state.telemetrySnapshot()
+	if position != (mgl32.Vec3{12, chunkFlyMaximumAltitude, -8}) {
+		t.Fatalf("prediction was not rebased to altitude reset target: %v", position)
+	}
+	state.setFlyingConfirmed(true)
+	cruise := authInputPacket(state, 1)
+	if cruise.MoveVector != (mgl32.Vec2{0, 1}) || cruise.Delta[1] != 0 {
+		t.Fatalf("rebased flight did not enter horizontal cruise: %+v", cruise)
+	}
 }
 
 func TestChunkFlyClimbsThenTraversesAtSafeAltitude(t *testing.T) {
