@@ -211,6 +211,10 @@ func runInstance(
 	chunkRadiusReady := false
 	onlineState := false
 	nextProgress := time.Now().Add(5 * time.Second)
+	var publisherUpdates uint64
+	var publisherX, publisherY, publisherZ int32
+	var publisherChunkX, publisherChunkZ int32
+	publisherSet := false
 	for {
 		pk, readErr := conn.ReadPacket()
 		if readErr != nil {
@@ -256,13 +260,31 @@ func runInstance(
 					return stageError(ExitRuntime, "output", err)
 				}
 			}
+		case *packet.NetworkChunkPublisherUpdate:
+			publisherUpdates++
+			x, y, z := p.Position[0], p.Position[1], p.Position[2]
+			chunkX, chunkZ := x>>4, z>>4
+			changedChunk := !publisherSet || chunkX != publisherChunkX || chunkZ != publisherChunkZ
+			publisherX, publisherY, publisherZ = x, y, z
+			publisherChunkX, publisherChunkZ = chunkX, chunkZ
+			publisherSet = true
+			if cfg.Scenario == ScenarioChunkFly && changedChunk {
+				if err := out.Emit("chunk_publisher", map[string]any{
+					"x": x, "y": y, "z": z, "chunk_x": chunkX, "chunk_z": chunkZ,
+					"radius": p.Radius, "updates": publisherUpdates,
+				}); err != nil {
+					return stageError(ExitRuntime, "output", err)
+				}
+			}
 		case *packet.MovePlayer:
 			if p.EntityRuntimeID == game.EntityRuntimeID {
 				state.update(p.Position, p.Pitch, p.Yaw, p.HeadYaw, p.Mode == packet.MoveModeTeleport)
+				state.syncServerTick(p.Tick)
 			}
 		case *packet.CorrectPlayerMovePrediction:
 			if p.PredictionType == packet.PredictionTypePlayer {
 				state.correct(p.Position, p.Rotation[0], p.Rotation[1], p.Rotation[1])
+				state.syncServerTick(p.Tick)
 			}
 		case *packet.UpdateAbilities:
 			if cfg.Scenario == ScenarioChunkFly && (p.AbilityData.EntityUniqueID == game.EntityUniqueID || p.AbilityData.EntityUniqueID == 0) {
@@ -307,8 +329,9 @@ func runInstance(
 
 		if onlineState && cfg.Scenario == ScenarioChunkFly && !time.Now().Before(nextProgress) {
 			position, flying, corrections := state.telemetrySnapshot()
+			nextInputTick, tickSynced := state.tickSnapshot()
 			spanX, spanZ := stats.chunkSpan()
-			if err := out.Emit("bot_progress", map[string]any{
+			fields := map[string]any{
 				"position":             []float32{position[0], position[1], position[2]},
 				"horizontal_distance":  horizontalDistance(stats.StartPosition, position),
 				"flying_confirmed":     flying,
@@ -318,7 +341,15 @@ func runInstance(
 				"chunk_span_z":         spanZ,
 				"auth_inputs_sent":     authInputs.Load(),
 				"movement_inputs_sent": movementInputs.Load(),
-			}); err != nil {
+				"next_input_tick":      nextInputTick,
+				"tick_synced":          tickSynced,
+				"publisher_updates":    publisherUpdates,
+			}
+			if publisherSet {
+				fields["publisher_position"] = []int32{publisherX, publisherY, publisherZ}
+				fields["publisher_chunk"] = []int32{publisherChunkX, publisherChunkZ}
+			}
+			if err := out.Emit("bot_progress", fields); err != nil {
 				return stageError(ExitRuntime, "output", err)
 			}
 			nextProgress = time.Now().Add(5 * time.Second)
