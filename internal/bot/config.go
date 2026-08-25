@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	scenarioengine "github.com/ReallocAll/bds-test-bot/internal/scenario"
 )
 
 const (
@@ -28,16 +30,18 @@ var (
 )
 
 type Config struct {
-	Host           string
-	Port           int
-	NamePrefix     string
-	Count          int
-	Scenario       string
-	ChunkRadius    int32
-	JSON           bool
-	ConnectTimeout time.Duration
-	SpawnTimeout   time.Duration
-	LoginStagger   time.Duration
+	Host               string
+	Port               int
+	NamePrefix         string
+	Count              int
+	Scenario           string
+	ScenarioFile       string
+	ScenarioDefinition *scenarioengine.Scenario
+	ChunkRadius        int32
+	JSON               bool
+	ConnectTimeout     time.Duration
+	SpawnTimeout       time.Duration
+	LoginStagger       time.Duration
 }
 
 func DefaultConfig() Config {
@@ -65,7 +69,8 @@ func ParseConfig(args []string) (Config, error) {
 	fs.StringVar(&legacyName, "name", "", "single offline test player name (legacy alias)")
 	fs.StringVar(&cfg.NamePrefix, "name-prefix", cfg.NamePrefix, "offline test player name prefix")
 	fs.IntVar(&cfg.Count, "count", cfg.Count, "number of independent bot connections")
-	fs.StringVar(&cfg.Scenario, "scenario", cfg.Scenario, "load scenario")
+	fs.StringVar(&cfg.Scenario, "scenario", cfg.Scenario, "built-in load scenario")
+	fs.StringVar(&cfg.ScenarioFile, "scenario-file", "", "JSON or YAML scenario definition")
 	fs.IntVar(&radius, "chunk-radius", int(cfg.ChunkRadius), "requested chunk radius")
 	fs.BoolVar(&cfg.JSON, "json", false, "emit JSON Lines on stdout")
 	fs.DurationVar(&cfg.ConnectTimeout, "connect-timeout", cfg.ConnectTimeout, "connect/login timeout")
@@ -96,11 +101,23 @@ func ParseConfig(args []string) (Config, error) {
 	if cfg.NamePrefix == "" {
 		return Config{}, errors.New("name-prefix must not be empty")
 	}
-	switch cfg.Scenario {
-	case ScenarioIdle, ScenarioChunkWalk:
-	default:
-		return Config{}, fmt.Errorf("unsupported scenario %q (supported: %s, %s)", cfg.Scenario, ScenarioIdle, ScenarioChunkWalk)
+
+	cfg.ScenarioFile = strings.TrimSpace(cfg.ScenarioFile)
+	if cfg.ScenarioFile != "" {
+		definition, err := scenarioengine.Load(cfg.ScenarioFile)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.ScenarioDefinition = &definition
+		cfg.Scenario = definition.Name
+	} else {
+		switch cfg.Scenario {
+		case ScenarioIdle, ScenarioChunkWalk:
+		default:
+			return Config{}, fmt.Errorf("unsupported scenario %q (supported built-ins: %s, %s; or use --scenario-file)", cfg.Scenario, ScenarioIdle, ScenarioChunkWalk)
+		}
 	}
+
 	if radius < 1 || radius > 96 {
 		return Config{}, fmt.Errorf("chunk-radius must be in range 1..96: %d", radius)
 	}
