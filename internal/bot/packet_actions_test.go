@@ -8,6 +8,7 @@ import (
 
 	"github.com/ReallocAll/bds-test-bot/internal/action"
 	"github.com/go-gl/mathgl/mgl32"
+	"github.com/google/uuid"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
@@ -46,18 +47,30 @@ func TestChatActionWritesTextPacket(t *testing.T) {
 	}
 }
 
-func TestCommandActionNormalizesSlash(t *testing.T) {
+func TestCommandActionNormalizesSlashAndUsesUniqueOrigin(t *testing.T) {
 	writer := &recordingPacketWriter{}
-	a := NewCommandAction(writer, "list")
-	if err := a.Tick(context.Background(), action.TickContext{Tick: 1}); err != nil {
-		t.Fatal(err)
+	for tick := uint64(1); tick <= 2; tick++ {
+		a := NewCommandAction(writer, "list")
+		if err := a.Tick(context.Background(), action.TickContext{Tick: tick}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	pk, ok := writer.packets[0].(*packet.CommandRequest)
+	first, ok := writer.packets[0].(*packet.CommandRequest)
 	if !ok {
 		t.Fatalf("packet = %T, want *packet.CommandRequest", writer.packets[0])
 	}
-	if pk.CommandLine != "/list" || pk.CommandOrigin.Origin != protocol.CommandOriginPlayer {
-		t.Fatalf("unexpected command packet: %+v", pk)
+	second, ok := writer.packets[1].(*packet.CommandRequest)
+	if !ok {
+		t.Fatalf("packet = %T, want *packet.CommandRequest", writer.packets[1])
+	}
+	if first.CommandLine != "/list" || first.CommandOrigin.Origin != protocol.CommandOriginPlayer {
+		t.Fatalf("unexpected command packet: %+v", first)
+	}
+	if first.CommandOrigin.UUID == uuid.Nil || second.CommandOrigin.UUID == uuid.Nil {
+		t.Fatal("command origin UUID must not be nil")
+	}
+	if first.CommandOrigin.UUID == second.CommandOrigin.UUID {
+		t.Fatal("each command request must use a unique origin UUID")
 	}
 }
 
