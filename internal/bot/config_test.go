@@ -64,6 +64,16 @@ func TestParseConfigAcceptsChunkWalk(t *testing.T) {
 	}
 }
 
+func TestParseConfigAcceptsChunkFly(t *testing.T) {
+	cfg, err := ParseConfig([]string{"--scenario", ScenarioChunkFly, "--count", "20"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Scenario != ScenarioChunkFly || cfg.Count != 20 {
+		t.Fatalf("unexpected chunk-fly config: %+v", cfg)
+	}
+}
+
 func TestParseConfigLoadsScenarioFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mixed.yaml")
 	data := []byte("name: mixed\nsteps:\n  - action: move\n    ticks: 4\n    forward: 1\n  - action: wait\n    ticks: 2\n")
