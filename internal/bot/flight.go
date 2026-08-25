@@ -2,10 +2,12 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"math"
 
 	"github.com/ReallocAll/bds-test-bot/internal/action"
 	"github.com/go-gl/mathgl/mgl32"
+	"github.com/google/uuid"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
@@ -14,7 +16,10 @@ const (
 	chunkFlyStepPerTick         = float32(0.32)
 	chunkFlyVerticalStepPerTick = float32(0.40)
 	chunkFlyMinimumAltitude     = float32(128)
+	chunkFlyMaximumAltitude     = float32(256)
 	chunkFlyAltitudeGain        = float32(64)
+	chunkFlyValidMinY           = float32(-64)
+	chunkFlyValidMaxY           = float32(320)
 	flightRequestRetryTicks     = uint64(40)
 )
 
@@ -22,25 +27,33 @@ const (
 // then continuously traverses horizontally. Horizontal prediction does not begin
 // until UpdateAbilities confirms that BDS accepted the flying state.
 type FlyAction struct {
-	state       *playerState
-	writer      packetWriter
-	vector      mgl32.Vec2
-	stepPerTick float32
-	yaw         float32
-	targetY     float32
-	elapsed     uint64
+	state         *playerState
+	writer        packetWriter
+	vector        mgl32.Vec2
+	stepPerTick   float32
+	yaw           float32
+	targetY       float32
+	resetAltitude bool
+	elapsed       uint64
 }
 
 func NewChunkFlyAction(state *playerState, writer packetWriter, yaw float32) *FlyAction {
 	position, _, _ := state.telemetrySnapshot()
-	targetY := float32(math.Max(float64(chunkFlyMinimumAltitude), float64(position[1]+chunkFlyAltitudeGain)))
+	targetY := position[1] + chunkFlyAltitudeGain
+	if targetY < chunkFlyMinimumAltitude {
+		targetY = chunkFlyMinimumAltitude
+	}
+	if targetY > chunkFlyMaximumAltitude {
+		targetY = chunkFlyMaximumAltitude
+	}
 	return &FlyAction{
-		state:       state,
-		writer:      writer,
-		vector:      mgl32.Vec2{0, 1},
-		stepPerTick: chunkFlyStepPerTick,
-		yaw:         yaw,
-		targetY:     targetY,
+		state:         state,
+		writer:        writer,
+		vector:        mgl32.Vec2{0, 1},
+		stepPerTick:   chunkFlyStepPerTick,
+		yaw:           yaw,
+		targetY:       targetY,
+		resetAltitude: position[1] < chunkFlyValidMinY || position[1] > chunkFlyValidMaxY,
 	}
 }
 
@@ -51,6 +64,11 @@ func (a *FlyAction) Start(context.Context) error {
 		return ErrPacketWriterUnavailable
 	}
 	a.state.setFlightControl(a.vector, a.stepPerTick, a.yaw, a.targetY, chunkFlyVerticalStepPerTick)
+	if a.resetAltitude {
+		if err := a.requestAltitudeReset(); err != nil {
+			return err
+		}
+	}
 	return a.requestFlight()
 }
 
@@ -64,6 +82,19 @@ func (a *FlyAction) Tick(context.Context, action.TickContext) error {
 }
 
 func (a *FlyAction) Done() bool { return false }
+
+func (a *FlyAction) requestAltitudeReset() error {
+	return a.writer.WritePacket(&packet.CommandRequest{
+		CommandLine: fmt.Sprintf("/tp @s ~ %.0f ~", a.targetY),
+		CommandOrigin: protocol.CommandOrigin{
+			Origin:         protocol.CommandOriginPlayer,
+			UUID:           uuid.New(),
+			PlayerUniqueID: 0,
+		},
+		Internal: false,
+		Version:  "latest",
+	})
+}
 
 func (a *FlyAction) requestFlight() error {
 	return a.writer.WritePacket(&packet.RequestAbility{
