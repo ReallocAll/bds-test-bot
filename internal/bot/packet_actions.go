@@ -2,12 +2,15 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/ReallocAll/bds-test-bot/internal/action"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
+
+var ErrPacketWriterUnavailable = errors.New("packet writer unavailable")
 
 // PacketAction emits one protocol packet on its first tick and then completes.
 type PacketAction struct {
