@@ -63,7 +63,8 @@ func (w authInputWriter) WritePacket(pk packet.Packet) error {
 	}
 	if input, ok := pk.(*packet.PlayerAuthInput); ok {
 		w.authCount.Add(1)
-		if input.MoveVector[0] != 0 || input.MoveVector[1] != 0 {
+		if input.MoveVector[0] != 0 || input.MoveVector[1] != 0 ||
+			input.Delta[0] != 0 || input.Delta[1] != 0 || input.Delta[2] != 0 {
 			w.movementCount.Add(1)
 		}
 		return nil
@@ -88,10 +89,18 @@ func runInstance(
 	var authInputs atomic.Uint64
 	var movementInputs atomic.Uint64
 	var actionPackets atomic.Uint64
+	var state *playerState
 	defer func() {
 		stats.AuthInputsSent = authInputs.Load()
 		stats.MovementInputsSent = movementInputs.Load()
 		stats.ActionPacketsSent = actionPackets.Load()
+		if state != nil {
+			position, flying, corrections := state.telemetrySnapshot()
+			stats.FinalPosition = position
+			stats.FlyingConfirmed = flying
+			stats.ServerCorrections = corrections
+			stats.HorizontalDistance = horizontalDistance(stats.StartPosition, position)
+		}
 	}()
 
 	if err := out.Emit("connecting", map[string]any{"address": address, "name": name}); err != nil {
@@ -159,6 +168,7 @@ func runInstance(
 	}
 
 	game := conn.GameData()
+	stats.StartPosition = game.PlayerPosition
 	if err := out.Emit("spawned", map[string]any{
 		"x": game.PlayerPosition[0], "y": game.PlayerPosition[1], "z": game.PlayerPosition[2],
 	}); err != nil {
@@ -176,7 +186,7 @@ func runInstance(
 	}
 
 	headingYaw := scenarioHeading(game.Yaw, instanceIndex, cfg.Count)
-	state := newPlayerState(game.PlayerPosition, game.Pitch, game.Yaw)
+	state = newPlayerState(game.PlayerPosition, game.Pitch, game.Yaw)
 	tickCtx, cancelTick := context.WithCancel(ctx)
 	defer cancelTick()
 	tickErr := make(chan error, 1)
@@ -200,6 +210,7 @@ func runInstance(
 
 	chunkRadiusReady := false
 	onlineState := false
+	nextProgress := time.Now().Add(5 * time.Second)
 	for {
 		pk, readErr := conn.ReadPacket()
 		if readErr != nil {
@@ -235,6 +246,7 @@ func runInstance(
 			}
 		case *packet.LevelChunk:
 			stats.ChunksReceived++
+			stats.recordChunk(p.Position[0], p.Position[1])
 			// Initial chunk streaming becomes very noisy for larger fleets. Keep
 			// representative evidence while retaining the exact per-bot counter.
 			if stats.ChunksReceived <= 3 || stats.ChunksReceived%100 == 0 {
@@ -250,7 +262,19 @@ func runInstance(
 			}
 		case *packet.CorrectPlayerMovePrediction:
 			if p.PredictionType == packet.PredictionTypePlayer {
-				state.update(p.Position, p.Rotation[0], p.Rotation[1], p.Rotation[1], false)
+				state.correct(p.Position, p.Rotation[0], p.Rotation[1], p.Rotation[1])
+			}
+		case *packet.UpdateAbilities:
+			if cfg.Scenario == ScenarioChunkFly && (p.AbilityData.EntityUniqueID == game.EntityUniqueID || p.AbilityData.EntityUniqueID == 0) {
+				mayFly, flying := flightAbilityState(p.AbilityData)
+				if state.setFlyingConfirmed(flying) {
+					if err := out.Emit("flight_state", map[string]any{
+						"may_fly": mayFly,
+						"flying":  flying,
+					}); err != nil {
+						return stageError(ExitRuntime, "output", err)
+					}
+				}
 			}
 		}
 
@@ -279,6 +303,25 @@ func runInstance(
 				case <-ctx.Done():
 				}
 			}
+		}
+
+		if onlineState && cfg.Scenario == ScenarioChunkFly && !time.Now().Before(nextProgress) {
+			position, flying, corrections := state.telemetrySnapshot()
+			spanX, spanZ := stats.chunkSpan()
+			if err := out.Emit("bot_progress", map[string]any{
+				"position":             []float32{position[0], position[1], position[2]},
+				"horizontal_distance":  horizontalDistance(stats.StartPosition, position),
+				"flying_confirmed":     flying,
+				"server_corrections":   corrections,
+				"chunks_received":      stats.ChunksReceived,
+				"chunk_span_x":         spanX,
+				"chunk_span_z":         spanZ,
+				"auth_inputs_sent":     authInputs.Load(),
+				"movement_inputs_sent": movementInputs.Load(),
+			}); err != nil {
+				return stageError(ExitRuntime, "output", err)
+			}
+			nextProgress = time.Now().Add(5 * time.Second)
 		}
 
 		select {
