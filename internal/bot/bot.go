@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-gl/mathgl/mgl32"
 	"github.com/sandertv/gophertunnel/minecraft"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/login"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
@@ -264,7 +265,25 @@ func runInstance(
 			publisherUpdates++
 			x, y, z := p.Position[0], p.Position[1], p.Position[2]
 			chunkX, chunkZ := x>>4, z>>4
+			samePublisher := publisherSet && x == publisherX && y == publisherY && z == publisherZ
 			changedChunk := !publisherSet || chunkX != publisherChunkX || chunkZ != publisherChunkZ
+			if cfg.Scenario == ScenarioChunkFly && samePublisher {
+				// BDS currently sends an initial one-shot publisher at 0,0,0, then
+				// repeatedly publishes the real player block position. Two identical
+				// consecutive publisher positions give us server-owned spawn evidence
+				// without trusting StartGame's Y≈32768 placeholder. StartGame X/Z
+				// remain precise, while the publisher block Y is converted back to
+				// PlayerAuthInput eye-height coordinates.
+				candidate := mgl32.Vec3{game.PlayerPosition[0], float32(y) + playerEyeHeight, game.PlayerPosition[2]}
+				if state.acceptPublisherPosition(candidate) {
+					if err := out.Emit("authoritative_position", map[string]any{
+						"position": []float32{candidate[0], candidate[1], candidate[2]},
+						"source":   "chunk_publisher",
+					}); err != nil {
+						return stageError(ExitRuntime, "output", err)
+					}
+				}
+			}
 			publisherX, publisherY, publisherZ = x, y, z
 			publisherChunkX, publisherChunkZ = chunkX, chunkZ
 			publisherSet = true
@@ -330,9 +349,11 @@ func runInstance(
 		if onlineState && cfg.Scenario == ScenarioChunkFly && !time.Now().Before(nextProgress) {
 			position, flying, corrections := state.telemetrySnapshot()
 			nextInputTick, tickSynced := state.tickSnapshot()
+			positionReady := state.positionReadySnapshot()
 			spanX, spanZ := stats.chunkSpan()
 			fields := map[string]any{
 				"position":             []float32{position[0], position[1], position[2]},
+				"position_ready":       positionReady,
 				"horizontal_distance":  horizontalDistance(stats.StartPosition, position),
 				"flying_confirmed":     flying,
 				"server_corrections":   corrections,
