@@ -19,6 +19,7 @@ type InstanceStats struct {
 	ChunksReceived     uint64
 	AuthInputsSent     uint64
 	MovementInputsSent uint64
+	ActionPacketsSent  uint64
 }
 
 type instanceResult struct {
@@ -96,6 +97,7 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 			"chunks_received":      stats.ChunksReceived,
 			"auth_inputs_sent":     stats.AuthInputsSent,
 			"movement_inputs_sent": stats.MovementInputsSent,
+			"action_packets_sent":  stats.ActionPacketsSent,
 		})
 	}
 
@@ -211,12 +213,14 @@ func finishFleet(
 	var chunks uint64
 	var authInputs uint64
 	var movementInputs uint64
+	var actionPackets uint64
 	for _, result := range results {
 		stats := result.stats
 		packets += stats.PacketsReceived
 		chunks += stats.ChunksReceived
 		authInputs += stats.AuthInputsSent
 		movementInputs += stats.MovementInputsSent
+		actionPackets += stats.ActionPacketsSent
 		fields := map[string]any{
 			"bot":                  stats.Name,
 			"index":                stats.Index,
@@ -226,6 +230,7 @@ func finishFleet(
 			"chunks_received":      stats.ChunksReceived,
 			"auth_inputs_sent":     stats.AuthInputsSent,
 			"movement_inputs_sent": stats.MovementInputsSent,
+			"action_packets_sent":  stats.ActionPacketsSent,
 		}
 		if !stats.EndedAt.IsZero() {
 			fields["uptime"] = stats.EndedAt.Sub(stats.StartedAt).Round(time.Millisecond).String()
@@ -252,6 +257,7 @@ func finishFleet(
 		"chunks_received":      chunks,
 		"auth_inputs_sent":     authInputs,
 		"movement_inputs_sent": movementInputs,
+		"action_packets_sent":  actionPackets,
 		"graceful_shutdown":    firstErr == nil,
 	}
 	if firstErr != nil {

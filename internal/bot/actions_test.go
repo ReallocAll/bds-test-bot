@@ -109,7 +109,7 @@ func TestScenarioActionsPreserveV01Semantics(t *testing.T) {
 	idleState := newPlayerState(mgl32.Vec3{1, 64, 2}, 0, 0)
 	idleCfg := DefaultConfig()
 	idleCfg.Scenario = ScenarioIdle
-	idle, err := newScenarioAction(idleCfg, idleState, 0)
+	idle, err := newScenarioAction(idleCfg, idleState, 0, nil, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestScenarioActionsPreserveV01Semantics(t *testing.T) {
 	walkState := newPlayerState(mgl32.Vec3{1, 64, 2}, 0, 0)
 	walkCfg := DefaultConfig()
 	walkCfg.Scenario = ScenarioChunkWalk
-	walk, err := newScenarioAction(walkCfg, walkState, 0)
+	walk, err := newScenarioAction(walkCfg, walkState, 0, nil, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

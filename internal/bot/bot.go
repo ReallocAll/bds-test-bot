@@ -52,18 +52,23 @@ func stageError(code int, stage string, err error) error {
 
 type authInputWriter struct {
 	writer        packetWriter
-	count         *atomic.Uint64
+	authCount     *atomic.Uint64
 	movementCount *atomic.Uint64
+	actionCount   *atomic.Uint64
 }
 
 func (w authInputWriter) WritePacket(pk packet.Packet) error {
 	if err := w.writer.WritePacket(pk); err != nil {
 		return err
 	}
-	w.count.Add(1)
-	if input, ok := pk.(*packet.PlayerAuthInput); ok && (input.MoveVector[0] != 0 || input.MoveVector[1] != 0) {
-		w.movementCount.Add(1)
+	if input, ok := pk.(*packet.PlayerAuthInput); ok {
+		w.authCount.Add(1)
+		if input.MoveVector[0] != 0 || input.MoveVector[1] != 0 {
+			w.movementCount.Add(1)
+		}
+		return nil
 	}
+	w.actionCount.Add(1)
 	return nil
 }
 
@@ -82,9 +87,11 @@ func runInstance(
 	}
 	var authInputs atomic.Uint64
 	var movementInputs atomic.Uint64
+	var actionPackets atomic.Uint64
 	defer func() {
 		stats.AuthInputsSent = authInputs.Load()
 		stats.MovementInputsSent = movementInputs.Load()
+		stats.ActionPacketsSent = actionPackets.Load()
 	}()
 
 	if err := out.Emit("connecting", map[string]any{"address": address, "name": name}); err != nil {
@@ -173,8 +180,15 @@ func runInstance(
 	tickCtx, cancelTick := context.WithCancel(ctx)
 	defer cancelTick()
 	tickErr := make(chan error, 1)
-	writer := authInputWriter{writer: conn, count: &authInputs, movementCount: &movementInputs}
-	go func() { tickErr <- runTickLoop(tickCtx, writer, state, cfg, headingYaw) }()
+	writer := authInputWriter{
+		writer:        conn,
+		authCount:     &authInputs,
+		movementCount: &movementInputs,
+		actionCount:   &actionPackets,
+	}
+	go func() {
+		tickErr <- runTickLoop(tickCtx, writer, state, cfg, headingYaw, name, game.EntityRuntimeID)
+	}()
 	if err := out.Emit("scenario_started", map[string]any{"heading_yaw": headingYaw}); err != nil {
 		return stageError(ExitRuntime, "output", err)
 	}
@@ -194,12 +208,14 @@ func runInstance(
 				<-gracefulCloseDone
 				stats.AuthInputsSent = authInputs.Load()
 				stats.MovementInputsSent = movementInputs.Load()
+				stats.ActionPacketsSent = actionPackets.Load()
 				_ = out.Emit("disconnected", map[string]any{
 					"uptime":               time.Since(stats.StartedAt).Round(time.Millisecond).String(),
 					"packets_received":     stats.PacketsReceived,
 					"chunks_received":      stats.ChunksReceived,
 					"auth_inputs_sent":     stats.AuthInputsSent,
 					"movement_inputs_sent": stats.MovementInputsSent,
+					"action_packets_sent":  stats.ActionPacketsSent,
 					"was_online":           onlineState,
 				})
 				return nil
@@ -243,6 +259,7 @@ func runInstance(
 			stats.OnlineAt = time.Now()
 			stats.AuthInputsSent = authInputs.Load()
 			stats.MovementInputsSent = movementInputs.Load()
+			stats.ActionPacketsSent = actionPackets.Load()
 			if err := conn.SetReadDeadline(time.Time{}); err != nil {
 				return stageError(ExitRuntime, "world", err)
 			}
@@ -251,6 +268,7 @@ func runInstance(
 				"packets_received":     stats.PacketsReceived,
 				"auth_inputs_sent":     stats.AuthInputsSent,
 				"movement_inputs_sent": stats.MovementInputsSent,
+				"action_packets_sent":  stats.ActionPacketsSent,
 				"uptime":               time.Since(stats.StartedAt).Round(time.Millisecond).String(),
 			}); err != nil {
 				return stageError(ExitRuntime, "output", err)
