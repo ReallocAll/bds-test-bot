@@ -59,7 +59,7 @@ func newConfiguredAction(step scenarioengine.Step, state *playerState, heading f
 	case scenarioengine.ActionChat:
 		return NewChatAction(writer, botName, step.Message), nil
 	case scenarioengine.ActionCommand:
-		return NewCommandAction(writer, step.Command), nil
+		return NewCommandAction(writer, step.Command, int64(entityRuntimeID)), nil
 	case scenarioengine.ActionSwing:
 		return NewSwingAction(writer, entityRuntimeID), nil
 	default:
