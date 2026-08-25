@@ -1,27 +1,35 @@
 package scenario
 
-import "testing"
+import (
+	"context"
+	"testing"
 
-type countAction struct { ticks int }
-
-func (a *countAction) Tick() bool {
-	a.ticks++
-	return a.ticks < 1
-}
+	"github.com/ReallocAll/bds-test-bot/internal/action"
+)
 
 func TestRunnerRepeat(t *testing.T) {
+	created := 0
 	runner := NewRunner(Scenario{
-		Name: "repeat",
+		Name:  "repeat",
 		Steps: []Step{{Action: "test", Repeat: 3}},
-	}, func(Step) (Action, error) {
-		return &countAction{}, nil
+	}, func(Step) (action.Action, error) {
+		created++
+		return &testAction{remaining: 1}, nil
 	})
 
-	count := 0
-	for runner.Tick() {
-		count++
+	ctx := context.Background()
+	if err := runner.Start(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if count != 3 {
-		t.Fatalf("expected 3 executions, got %d", count)
+	for tick := uint64(1); tick <= 3; tick++ {
+		if err := runner.Tick(ctx, action.TickContext{Tick: tick}); err != nil {
+			t.Fatalf("tick %d: %v", tick, err)
+		}
+	}
+	if !runner.Done() {
+		t.Fatal("runner should finish after three repetitions")
+	}
+	if created != 3 {
+		t.Fatalf("factory calls = %d, want 3", created)
 	}
 }
