@@ -63,8 +63,11 @@ func (w authInputWriter) WritePacket(pk packet.Packet) error {
 	}
 	if input, ok := pk.(*packet.PlayerAuthInput); ok {
 		w.authCount.Add(1)
-		if input.MoveVector[0] != 0 || input.MoveVector[1] != 0 ||
-			input.Delta[0] != 0 || input.Delta[1] != 0 || input.Delta[2] != 0 {
+		moving := input.MoveVector[0] != 0 || input.MoveVector[1] != 0 ||
+			input.Delta[0] != 0 || input.Delta[1] != 0 || input.Delta[2] != 0 ||
+			input.InputData.Load(packet.InputFlagAscend) || input.InputData.Load(packet.InputFlagDescend) ||
+			input.InputData.Load(packet.InputFlagWantUp) || input.InputData.Load(packet.InputFlagWantDown)
+		if moving {
 			w.movementCount.Add(1)
 		}
 		return nil
@@ -279,6 +282,7 @@ func runInstance(
 				// eye height for the PlayerAuthInput Y coordinate.
 				candidate := publisherEyePosition(p.Position)
 				if state.acceptPublisherPosition(candidate) {
+					stats.StartPosition = candidate
 					if err := out.Emit("authoritative_position", map[string]any{
 						"position": []float32{candidate[0], candidate[1], candidate[2]},
 						"source":   "chunk_publisher",
@@ -286,6 +290,9 @@ func runInstance(
 						return stageError(ExitRuntime, "output", err)
 					}
 				}
+			}
+			if cfg.Scenario == ScenarioChunkFly {
+				state.observePublisherPosition(publisherEyePosition(p.Position))
 			}
 			publisherX, publisherY, publisherZ = x, y, z
 			publisherChunkX, publisherChunkZ = chunkX, chunkZ
