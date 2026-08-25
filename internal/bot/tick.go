@@ -71,6 +71,18 @@ func (s *playerState) update(position mgl32.Vec3, pitch, yaw, headYaw float32, t
 	s.yaw = yaw
 	s.headYaw = headYaw
 	s.handledTeleport = s.handledTeleport || teleport
+	if teleport {
+		s.serverCorrections++
+	}
+}
+
+func (s *playerState) correct(position mgl32.Vec3, pitch, yaw, headYaw float32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.position = position
+	s.pitch = pitch
+	s.yaw = yaw
+	s.headYaw = headYaw
 	s.serverCorrections++
 }
 
