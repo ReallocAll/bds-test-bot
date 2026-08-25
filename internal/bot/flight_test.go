@@ -187,6 +187,9 @@ func TestServerTickSyncDrivesNextAuthInputTick(t *testing.T) {
 	if got := state.nextInputTick(); got != 0 {
 		t.Fatalf("initial input tick = %d, want 0", got)
 	}
+	if got := state.nextInputTick(); got != 0 {
+		t.Fatalf("unsynced input tick = %d, want neutral 0", got)
+	}
 	state.syncServerTick(240)
 	next, synced := state.tickSnapshot()
 	if !synced || next != 241 {

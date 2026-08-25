@@ -154,6 +154,13 @@ func (s *playerState) syncServerTick(serverTick uint64) {
 func (s *playerState) nextInputTick() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// PlayerAuthInput.Tick is a server tick, not a client-local frame
+	// counter. Until a packet carrying a server tick establishes the
+	// clock, keep the protocol's neutral zero value rather than sending
+	// an ever-growing unrelated tick sequence.
+	if !s.tickSynced {
+		return 0
+	}
 	tick := s.serverTick
 	s.serverTick++
 	return tick
