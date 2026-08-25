@@ -30,6 +30,12 @@ func Parse(data []byte) (Scenario, error) {
 		if step.Action == "" {
 			return Scenario{}, fmt.Errorf("step %d action is required", i)
 		}
+		if step.Ticks < 0 {
+			return Scenario{}, fmt.Errorf("step %d ticks cannot be negative", i)
+		}
+		if step.Repeat < 0 {
+			return Scenario{}, fmt.Errorf("step %d repeat cannot be negative", i)
+		}
 	}
 	return s, nil
 }
