@@ -21,6 +21,14 @@ const (
 	ExitArgs    = 2
 	ExitConnect = 3
 	ExitSpawn   = 4
+
+	// gophertunnel ultimately closes its transport through go-raknet. go-raknet
+	// intentionally makes Close asynchronous so outstanding reliable datagrams
+	// can be acknowledged before it sends the RakNet DisconnectNotification.
+	// Keep the process alive briefly after initiating the close; otherwise the
+	// Go runtime terminates that transport goroutine and BDS only removes the
+	// player after its network timeout.
+	rakNetCloseGrace = 2 * time.Second
 )
 
 type StageError struct {
@@ -72,11 +80,17 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 	}
 
 	closeOnCancelDone := make(chan struct{})
+	gracefulCloseDone := make(chan struct{})
 	defer close(closeOnCancelDone)
 	go func() {
+		defer close(gracefulCloseDone)
 		select {
 		case <-ctx.Done():
 			_ = conn.Close()
+			// minecraft.Conn.Close() returns before go-raknet has necessarily
+			// sent its transport-level DisconnectNotification. Do not let the
+			// process exit while that asynchronous close is still in flight.
+			time.Sleep(rakNetCloseGrace)
 		case <-closeOnCancelDone:
 		}
 	}()
@@ -86,6 +100,7 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 	cancelSpawn()
 	if err != nil {
 		if ctx.Err() != nil {
+			<-gracefulCloseDone
 			return nil
 		}
 		return stageError(ExitSpawn, "spawn", err)
@@ -136,6 +151,7 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 		if readErr != nil {
 			cancelTick()
 			if ctx.Err() != nil {
+				<-gracefulCloseDone
 				_ = out.Emit("disconnected", map[string]any{"uptime": time.Since(startedAt).Round(time.Millisecond).String()})
 				return nil
 			}
@@ -189,6 +205,7 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 				return stageError(ExitRuntime, "tick", err)
 			}
 			if ctx.Err() != nil {
+				<-gracefulCloseDone
 				return nil
 			}
 		default:
