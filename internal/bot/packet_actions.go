@@ -64,7 +64,7 @@ func NewChatAction(writer packetWriter, sourceName, message string) *PacketActio
 	})
 }
 
-func NewCommandAction(writer packetWriter, command string, playerUniqueID int64) *PacketAction {
+func NewCommandAction(writer packetWriter, command string) *PacketAction {
 	command = strings.TrimSpace(command)
 	command = strings.TrimPrefix(command, "/")
 	return NewPacketAction("command", writer, func() packet.Packet {
@@ -73,7 +73,7 @@ func NewCommandAction(writer packetWriter, command string, playerUniqueID int64)
 			CommandOrigin: protocol.CommandOrigin{
 				Origin:         protocol.CommandOriginPlayer,
 				UUID:           uuid.New(),
-				PlayerUniqueID: playerUniqueID,
+				PlayerUniqueID: 0,
 			},
 			Internal: false,
 		}
