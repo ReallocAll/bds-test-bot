@@ -21,6 +21,7 @@ const (
 	DefaultChunkRadius = 8
 	ScenarioIdle       = "idle"
 	ScenarioChunkWalk  = "chunk-walk"
+	ScenarioChunkFly   = "chunk-fly"
 )
 
 var (
@@ -112,9 +113,9 @@ func ParseConfig(args []string) (Config, error) {
 		cfg.Scenario = definition.Name
 	} else {
 		switch cfg.Scenario {
-		case ScenarioIdle, ScenarioChunkWalk:
+		case ScenarioIdle, ScenarioChunkWalk, ScenarioChunkFly:
 		default:
-			return Config{}, fmt.Errorf("unsupported scenario %q (supported built-ins: %s, %s; or use --scenario-file)", cfg.Scenario, ScenarioIdle, ScenarioChunkWalk)
+			return Config{}, fmt.Errorf("unsupported scenario %q (supported built-ins: %s, %s, %s; or use --scenario-file)", cfg.Scenario, ScenarioIdle, ScenarioChunkWalk, ScenarioChunkFly)
 		}
 	}
 
