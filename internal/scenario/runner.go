@@ -2,9 +2,10 @@ package scenario
 
 // Runner executes scenario steps through an action factory.
 type Runner struct {
-	steps []Step
-	index int
-	factory ActionFactory
+	steps    []Step
+	index    int
+	current  Action
+	factory  ActionFactory
 }
 
 // Action is the minimal executable unit produced by a scenario step.
@@ -21,8 +22,23 @@ func NewRunner(s Scenario, factory ActionFactory) *Runner {
 
 // Tick advances the current scenario. It returns false when all steps are done.
 func (r *Runner) Tick() bool {
-	if r.index >= len(r.steps) {
-		return false
+	for {
+		if r.current == nil {
+			if r.index >= len(r.steps) {
+				return false
+			}
+			action, err := r.factory(r.steps[r.index])
+			if err != nil {
+				return false
+			}
+			r.current = action
+		}
+
+		if r.current.Tick() {
+			return true
+		}
+
+		r.current = nil
+		r.index++
 	}
-	return true
 }
