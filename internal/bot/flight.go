@@ -6,6 +6,7 @@ import (
 
 	"github.com/ReallocAll/bds-test-bot/internal/action"
 	"github.com/go-gl/mathgl/mgl32"
+	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
 
@@ -69,6 +70,22 @@ func (a *FlyAction) requestFlight() error {
 		Ability: packet.AbilityFlying,
 		Value:   true,
 	})
+}
+
+func flightAbilityState(data protocol.AbilityData) (mayFly, flying bool) {
+	for _, layer := range data.Layers {
+		if layer.Abilities&protocol.AbilityMayFly != 0 && layer.Values&protocol.AbilityMayFly != 0 {
+			mayFly = true
+		}
+		if layer.Abilities&protocol.AbilityFlying != 0 && layer.Values&protocol.AbilityFlying != 0 {
+			flying = true
+		}
+	}
+	return mayFly, flying
+}
+
+func horizontalDistance(start, end mgl32.Vec3) float64 {
+	return math.Hypot(float64(end[0]-start[0]), float64(end[2]-start[2]))
 }
 
 func (s *playerState) setFlightControl(vector mgl32.Vec2, stepPerTick, yaw, targetY, verticalStep float32) {
