@@ -76,6 +76,7 @@ func NewCommandAction(writer packetWriter, command string) *PacketAction {
 				PlayerUniqueID: 0,
 			},
 			Internal: false,
+			Version:  "latest",
 		}
 	})
 }
