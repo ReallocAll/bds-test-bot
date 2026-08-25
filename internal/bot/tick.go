@@ -27,16 +27,36 @@ type inputControl struct {
 	pitch         float32
 	jump          bool
 	lastJump      bool
+	fly           bool
+	flightTargetY float32
+	verticalStep  float32
 }
 
 type playerState struct {
-	mu              sync.Mutex
-	position        mgl32.Vec3
-	pitch           float32
-	yaw             float32
-	headYaw         float32
-	handledTeleport bool
-	control         inputControl
+	mu                sync.Mutex
+	position          mgl32.Vec3
+	pitch             float32
+	yaw               float32
+	headYaw           float32
+	handledTeleport   bool
+	flyingConfirmed   bool
+	serverCorrections uint64
+	control           inputControl
+}
+
+type authInputSnapshot struct {
+	position          mgl32.Vec3
+	pitch             float32
+	yaw               float32
+	headYaw           float32
+	handledTeleport   bool
+	delta             mgl32.Vec3
+	moveVector        mgl32.Vec2
+	jumping           bool
+	wasJumping        bool
+	flightRequested   bool
+	flyingConfirmed   bool
+	verticalDirection float32
 }
 
 func newPlayerState(position mgl32.Vec3, pitch, yaw float32) *playerState {
@@ -51,6 +71,7 @@ func (s *playerState) update(position mgl32.Vec3, pitch, yaw, headYaw float32, t
 	s.yaw = yaw
 	s.headYaw = headYaw
 	s.handledTeleport = s.handledTeleport || teleport
+	s.serverCorrections++
 }
 
 func (s *playerState) setIdleControl() {
@@ -61,6 +82,7 @@ func (s *playerState) setIdleControl() {
 	s.control.overrideYaw = false
 	s.control.overridePitch = false
 	s.control.jump = false
+	s.control.fly = false
 }
 
 func (s *playerState) setMoveControl(vector mgl32.Vec2, stepPerTick, yaw float32) {
@@ -70,6 +92,7 @@ func (s *playerState) setMoveControl(vector mgl32.Vec2, stepPerTick, yaw float32
 	s.control.moveStep = stepPerTick
 	s.control.overrideYaw = true
 	s.control.yaw = yaw
+	s.control.fly = false
 }
 
 func (s *playerState) clearMoveControl() {
@@ -102,46 +125,81 @@ func (s *playerState) setJumpControl(jump bool) {
 	s.control.jump = jump
 }
 
-func (s *playerState) inputSnapshot() (mgl32.Vec3, float32, float32, float32, bool, mgl32.Vec3, mgl32.Vec2, bool, bool) {
+func (s *playerState) inputSnapshot() authInputSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	teleport := s.handledTeleport
+	snapshot := authInputSnapshot{
+		position:        s.position,
+		pitch:           s.pitch,
+		yaw:             s.yaw,
+		headYaw:         s.headYaw,
+		handledTeleport: s.handledTeleport,
+		flightRequested: s.control.fly,
+		flyingConfirmed: s.flyingConfirmed,
+	}
 	s.handledTeleport = false
-	pitch := s.pitch
-	yaw := s.yaw
-	headYaw := s.headYaw
 
 	if s.control.overridePitch {
-		pitch = s.control.pitch
+		snapshot.pitch = s.control.pitch
 	}
 	if s.control.overrideYaw {
-		yaw = s.control.yaw
-		headYaw = s.control.yaw
+		snapshot.yaw = s.control.yaw
+		snapshot.headYaw = s.control.yaw
 	}
 
-	moveVector := s.control.moveVector
-	delta := mgl32.Vec3{}
-	if teleport {
-		moveVector = mgl32.Vec2{}
-	} else if moveVector != (mgl32.Vec2{}) && s.control.moveStep != 0 {
-		yawRad := float64(yaw) * math.Pi / 180
-		forward := float64(moveVector[1])
-		strafe := float64(moveVector[0])
-		delta = mgl32.Vec3{
-			float32(math.Cos(yawRad)*strafe-math.Sin(yawRad)*forward) * s.control.moveStep,
-			0,
-			float32(math.Sin(yawRad)*strafe+math.Cos(yawRad)*forward) * s.control.moveStep,
+	snapshot.moveVector = s.control.moveVector
+	if snapshot.handledTeleport {
+		snapshot.moveVector = mgl32.Vec2{}
+	} else if s.control.fly {
+		if !s.flyingConfirmed {
+			// Do not predict movement until the server has acknowledged creative
+			// flight through UpdateAbilities. This prevents the local position
+			// from racing ahead while BDS still considers the player grounded.
+			snapshot.moveVector = mgl32.Vec2{}
+		} else {
+			diff := s.control.flightTargetY - s.position[1]
+			if float32(math.Abs(float64(diff))) > 0.05 {
+				snapshot.moveVector = mgl32.Vec2{}
+				step := s.control.verticalStep
+				if step <= 0 {
+					step = float32(math.Abs(float64(diff)))
+				}
+				if float32(math.Abs(float64(diff))) < step {
+					step = float32(math.Abs(float64(diff)))
+				}
+				if diff < 0 {
+					step = -step
+				}
+				snapshot.delta[1] = step
+				snapshot.verticalDirection = step
+				s.position[1] += step
+			} else {
+				applyHorizontalMovement(s, &snapshot, s.control.moveStep)
+			}
 		}
-		s.position[0] += delta[0]
-		s.position[2] += delta[2]
+	} else if snapshot.moveVector != (mgl32.Vec2{}) && s.control.moveStep != 0 {
+		applyHorizontalMovement(s, &snapshot, s.control.moveStep)
 	}
 
-	jump := s.control.jump && !teleport
-	lastJump := s.control.lastJump
-	s.control.lastJump = jump
+	snapshot.position = s.position
+	snapshot.jumping = s.control.jump && !snapshot.handledTeleport
+	snapshot.wasJumping = s.control.lastJump
+	s.control.lastJump = snapshot.jumping
+	return snapshot
+}
 
-	return s.position, pitch, yaw, headYaw, teleport, delta, moveVector, jump, lastJump
+func applyHorizontalMovement(s *playerState, snapshot *authInputSnapshot, stepPerTick float32) {
+	if snapshot.moveVector == (mgl32.Vec2{}) || stepPerTick == 0 {
+		return
+	}
+	yawRad := float64(snapshot.yaw) * math.Pi / 180
+	forward := float64(snapshot.moveVector[1])
+	strafe := float64(snapshot.moveVector[0])
+	snapshot.delta[0] = float32(math.Cos(yawRad)*strafe-math.Sin(yawRad)*forward) * stepPerTick
+	snapshot.delta[2] = float32(math.Sin(yawRad)*strafe+math.Cos(yawRad)*forward) * stepPerTick
+	s.position[0] += snapshot.delta[0]
+	s.position[2] += snapshot.delta[2]
 }
 
 func scenarioHeading(baseYaw float32, index, count int) float32 {
@@ -157,39 +215,51 @@ func scenarioHeading(baseYaw float32, index, count int) float32 {
 }
 
 func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
-	position, pitch, yaw, headYaw, handledTeleport, delta, moveVector, jumping, wasJumping := s.inputSnapshot()
+	snapshot := s.inputSnapshot()
 	flags := protocol.NewInputFlags(packet.InputFlagCount)
-	if handledTeleport {
+	if snapshot.handledTeleport {
 		flags.Set(packet.InputFlagHandledTeleport)
 	}
 
-	if moveVector[1] > 0 {
+	if snapshot.moveVector[1] > 0 {
 		flags.Set(packet.InputFlagUp)
 	}
-	if moveVector[1] < 0 {
+	if snapshot.moveVector[1] < 0 {
 		flags.Set(packet.InputFlagDown)
 	}
-	if moveVector[0] < 0 {
+	if snapshot.moveVector[0] < 0 {
 		flags.Set(packet.InputFlagLeft)
 	}
-	if moveVector[0] > 0 {
+	if snapshot.moveVector[0] > 0 {
 		flags.Set(packet.InputFlagRight)
 	}
 
-	if jumping {
+	if snapshot.flightRequested && !snapshot.flyingConfirmed {
+		flags.Set(packet.InputFlagStartFlying)
+	}
+	if snapshot.verticalDirection > 0 {
+		flags.Set(packet.InputFlagAscend)
+		flags.Set(packet.InputFlagWantUp)
+	}
+	if snapshot.verticalDirection < 0 {
+		flags.Set(packet.InputFlagDescend)
+		flags.Set(packet.InputFlagWantDown)
+	}
+
+	if snapshot.jumping {
 		flags.Set(packet.InputFlagJumping)
 		flags.Set(packet.InputFlagJumpCurrentRaw)
-		if !wasJumping {
+		if !snapshot.wasJumping {
 			flags.Set(packet.InputFlagJumpDown)
 			flags.Set(packet.InputFlagStartJumping)
 			flags.Set(packet.InputFlagJumpPressedRaw)
 		}
-	} else if wasJumping {
+	} else if snapshot.wasJumping {
 		flags.Set(packet.InputFlagJumpReleasedRaw)
 	}
 
-	pitchRad := float64(pitch) * math.Pi / 180
-	yawRad := float64(yaw) * math.Pi / 180
+	pitchRad := float64(snapshot.pitch) * math.Pi / 180
+	yawRad := float64(snapshot.yaw) * math.Pi / 180
 	camera := mgl32.Vec3{
 		-float32(math.Sin(yawRad) * math.Cos(pitchRad)),
 		-float32(math.Sin(pitchRad)),
@@ -197,22 +267,22 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 	}
 
 	return &packet.PlayerAuthInput{
-		Pitch:              pitch,
-		Yaw:                yaw,
-		Position:           position,
-		MoveVector:         moveVector,
-		HeadYaw:            headYaw,
+		Pitch:              snapshot.pitch,
+		Yaw:                snapshot.yaw,
+		Position:           snapshot.position,
+		MoveVector:         snapshot.moveVector,
+		HeadYaw:            snapshot.headYaw,
 		InputData:          flags,
 		InputMode:          packet.InputModeMouse,
 		PlayMode:           packet.PlayModeScreen,
 		InteractionModel:   packet.InteractionModelCrosshair,
-		InteractPitch:      pitch,
-		InteractYaw:        yaw,
+		InteractPitch:      snapshot.pitch,
+		InteractYaw:        snapshot.yaw,
 		Tick:               tick,
-		Delta:              delta,
-		AnalogueMoveVector: moveVector,
+		Delta:              snapshot.delta,
+		AnalogueMoveVector: snapshot.moveVector,
 		CameraOrientation:  camera,
-		RawMoveVector:      moveVector,
+		RawMoveVector:      snapshot.moveVector,
 	}
 }
 
