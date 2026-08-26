@@ -264,10 +264,10 @@ func (s *playerState) inputSnapshot() authInputSnapshot {
 			// until the first stable server publisher position seeds the player.
 			snapshot.moveVector = mgl32.Vec2{}
 		} else {
-			// Keep the server-owned spawn altitude unchanged while validating the
-			// server-accepted horizontal movement stream. Altitude control is
-			// layered back on only after BDS accepts this prediction history.
-			applyHorizontalMovement(s, &snapshot, s.control.moveStep)
+			// Creative flight is server-confirmed before prediction begins. Climb
+			// vertically to the safe target first so terrain cannot pin the bot,
+			// then begin horizontal chunk traversal.
+			applyFlightMovement(s, &snapshot)
 		}
 	} else if snapshot.moveVector != (mgl32.Vec2{}) && s.control.moveStep != 0 {
 		applyHorizontalMovement(s, &snapshot, s.control.moveStep)
