@@ -81,6 +81,11 @@ func (a *FlyAction) Tick(context.Context, action.TickContext) error {
 func (a *FlyAction) Done() bool { return false }
 
 func (a *FlyAction) requestFlight() error {
+	// StartFlying is an input transition, not a persistent movement state. Queue
+	// it for the next PlayerAuthInput frame whenever the corresponding creative
+	// flying ability request is sent. If BDS has not acknowledged flight yet,
+	// Tick retries both together at a bounded cadence.
+	a.state.queueFlightStartTransition()
 	return a.writer.WritePacket(&packet.RequestAbility{
 		Ability: packet.AbilityFlying,
 		Value:   true,
