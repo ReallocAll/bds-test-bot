@@ -96,25 +96,22 @@ func TestChunkFlySeedsPublisherWithoutSyntheticTeleportAck(t *testing.T) {
 	if err := fly.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	state.setFlyingConfirmed(true)
-	blocked := authInputPacket(state, 1)
-	if !blocked.InputData.Load(packet.InputFlagStartFlying) {
-		t.Fatal("first publisher-waiting frame must carry the queued flight transition")
-	}
-	if blocked.MoveVector != (mgl32.Vec2{}) || blocked.Delta != (mgl32.Vec3{}) {
-		t.Fatalf("placeholder position generated movement before publisher evidence: %+v", blocked)
-	}
 
+	// Publisher seeding is only a fallback before the PlayerAuthInput stream has
+	// begun. The production chunk-fly path starts AuthInput first and therefore
+	// waits for a server movement correction instead; that contract is covered
+	// separately in tick_test.go.
 	publisherPosition := mgl32.Vec3{12.5, 68 + playerEyeHeight, -7.5}
 	if !state.acceptPublisherPosition(publisherPosition) {
-		t.Fatal("stable server publisher position was not accepted")
+		t.Fatal("stable pre-input publisher position was not accepted")
 	}
-	input := authInputPacket(state, 2)
+	state.setFlyingConfirmed(true)
+	input := authInputPacket(state, 1)
+	if !input.InputData.Load(packet.InputFlagStartFlying) {
+		t.Fatal("first auth frame must carry the queued StartFlying transition")
+	}
 	if input.InputData.Load(packet.InputFlagHandledTeleport) {
 		t.Fatalf("chunk publisher must not synthesize HandledTeleport: %+v", input.InputData)
-	}
-	if input.InputData.Load(packet.InputFlagStartFlying) {
-		t.Fatal("StartFlying must not remain asserted after its transition frame")
 	}
 	if input.MoveVector != (mgl32.Vec2{}) || input.Delta[1] <= 0 || input.Delta[0] != 0 || input.Delta[2] != 0 {
 		t.Fatalf("publisher-seeded ascent prediction = move %v delta %v", input.MoveVector, input.Delta)
