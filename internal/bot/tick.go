@@ -39,6 +39,7 @@ type playerState struct {
 	mu                 sync.Mutex
 	position           mgl32.Vec3
 	positionReady      bool
+	inputStarted       bool
 	pitch              float32
 	yaw                float32
 	headYaw            float32
@@ -113,13 +114,12 @@ func (s *playerState) correct(position mgl32.Vec3, pitch, yaw, headYaw float32) 
 func (s *playerState) acceptPublisherPosition(position mgl32.Vec3) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.positionReady || !validPlayerPositionY(position[1]) {
+	if s.positionReady || s.inputStarted || !validPlayerPositionY(position[1]) {
 		return false
 	}
-	// StartGame may contain a temporary Y≈32768 position while BDS already
-	// publishes the actual player location. NetworkChunkPublisherUpdate is not a
-	// teleport packet, so use it only to seed prediction history. Emitting a
-	// synthetic HandledTeleport here can acknowledge a teleport BDS never sent.
+	// Publisher position is only a pre-input fallback. Once PlayerAuthInput has
+	// started, BDS correction/movement packets own prediction history and the
+	// publisher remains observability-only evidence.
 	s.position = position
 	s.positionReady = true
 	return true
@@ -158,6 +158,7 @@ func (s *playerState) syncServerTick(serverTick uint64) {
 func (s *playerState) nextInputTick() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.inputStarted = true
 	// PlayerAuthInput carries the client's monotonically advancing movement
 	// frame id. Server packets may move this clock forward when they refer to
 	// a later prediction, but initial movement starts at frame zero.
@@ -260,8 +261,9 @@ func (s *playerState) inputSnapshot() authInputSnapshot {
 		snapshot.moveVector = mgl32.Vec2{}
 	} else if s.control.fly {
 		if !s.flyingConfirmed || !s.positionReady {
-			// Never predict from StartGame's temporary Y≈32768 position. Wait
-			// until the first stable server publisher position seeds the player.
+			// Keep sending an idle prediction stream from StartGame's temporary
+			// coordinates until BDS returns a movement correction with the real
+			// player position. Do not predict flight from the placeholder.
 			snapshot.moveVector = mgl32.Vec2{}
 		} else {
 			// Creative flight is server-confirmed before prediction begins. Climb
@@ -391,12 +393,10 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 }
 
 func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, cfg Config, headingYaw float32, botName string, entityRuntimeID uint64) error {
-	// BDS does not accept movement immediately after DoSpawn has returned. A
-	// current BDS integration client (go-test-bds) requires the same two-second
-	// settle window before starting its movement tick loop. Keep idle unchanged,
-	// but defer both traversal scenarios so their first PlayerAuthInput starts
-	// after the server has fully activated the player session.
-	if cfg.Scenario == ScenarioChunkWalk || cfg.Scenario == ScenarioChunkFly {
+	// Preserve the settle delay for walking. Chunk-fly instead starts a zero-
+	// movement auth stream immediately so BDS can establish its prediction
+	// history and return CorrectPlayerMovePrediction before any flight motion.
+	if cfg.Scenario == ScenarioChunkWalk {
 		timer := time.NewTimer(movementStartDelay)
 		select {
 		case <-ctx.Done():
@@ -405,6 +405,16 @@ func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, c
 			}
 			return nil
 		case <-timer.C:
+		}
+	}
+
+	if cfg.Scenario == ScenarioChunkFly {
+		tick := state.nextInputTick()
+		if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
 		}
 	}
 
@@ -425,13 +435,6 @@ func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, c
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			// Do not establish PlayerAuthInput movement history using the
-			// temporary StartGame altitude. RequestAbility is already sent from
-			// FlyAction.Start; PlayerAuthInput begins only after BDS publishes a
-			// stable, valid player position that we can acknowledge.
-			if cfg.Scenario == ScenarioChunkFly && !state.positionReadySnapshot() {
-				continue
-			}
 			tick := state.nextInputTick()
 			if err := runner.Tick(ctx, action.TickContext{Tick: tick}); err != nil {
 				return err
