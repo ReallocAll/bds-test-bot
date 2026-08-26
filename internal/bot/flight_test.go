@@ -116,11 +116,14 @@ func TestChunkFlySeedsPublisherWithoutSyntheticTeleportAck(t *testing.T) {
 	if input.InputData.Load(packet.InputFlagStartFlying) {
 		t.Fatal("StartFlying must not remain asserted after its transition frame")
 	}
-	if input.MoveVector != (mgl32.Vec2{0, 1}) || input.Delta[2] <= 0 || input.Delta[1] != 0 {
-		t.Fatalf("publisher-seeded horizontal prediction = move %v delta %v", input.MoveVector, input.Delta)
+	if input.MoveVector != (mgl32.Vec2{}) || input.Delta[1] <= 0 || input.Delta[0] != 0 || input.Delta[2] != 0 {
+		t.Fatalf("publisher-seeded ascent prediction = move %v delta %v", input.MoveVector, input.Delta)
 	}
-	if input.Position[1] != publisherPosition[1] {
-		t.Fatalf("horizontal diagnostic changed altitude: %v", input.Position)
+	if !input.InputData.Load(packet.InputFlagAscend) || !input.InputData.Load(packet.InputFlagWantUp) {
+		t.Fatalf("publisher-seeded flight did not request ascent: %+v", input.InputData)
+	}
+	if input.Position[1] <= publisherPosition[1] {
+		t.Fatalf("publisher-seeded ascent did not increase altitude: %v", input.Position)
 	}
 }
 
@@ -141,7 +144,7 @@ func TestPublisherTelemetryDoesNotOverwritePredictedFlightPosition(t *testing.T)
 	}
 	state.setFlyingConfirmed(true)
 	first := authInputPacket(state, 7)
-	if first.Delta[2] <= 0 {
+	if first.Delta[1] <= 0 || first.Delta[0] != 0 || first.Delta[2] != 0 {
 		t.Fatalf("first predicted flight delta = %v", first.Delta)
 	}
 	before, _, _ := state.telemetrySnapshot()
@@ -153,7 +156,7 @@ func TestPublisherTelemetryDoesNotOverwritePredictedFlightPosition(t *testing.T)
 	}
 }
 
-func TestChunkFlyHorizontalDiagnosticKeepsAuthoritativeAltitude(t *testing.T) {
+func TestChunkFlyClimbsBeforeHorizontalTraversal(t *testing.T) {
 	state := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
 	writer := &recordingPacketWriter{}
 	fly := NewChunkFlyAction(state, writer, 0)
@@ -162,21 +165,27 @@ func TestChunkFlyHorizontalDiagnosticKeepsAuthoritativeAltitude(t *testing.T) {
 	}
 	state.setFlyingConfirmed(true)
 
-	input := authInputPacket(state, 1)
-	if input.InputData.Load(packet.InputFlagAscend) || input.InputData.Load(packet.InputFlagWantUp) {
-		t.Fatalf("horizontal diagnostic requested ascent: %+v", input.InputData)
+	ascent := authInputPacket(state, 1)
+	if !ascent.InputData.Load(packet.InputFlagAscend) || !ascent.InputData.Load(packet.InputFlagWantUp) {
+		t.Fatalf("chunk-fly ascent flags missing: %+v", ascent.InputData)
 	}
-	if input.MoveVector != (mgl32.Vec2{0, 1}) || input.Delta[2] <= 0 || input.Delta[1] != 0 {
-		t.Fatalf("horizontal diagnostic = move %v delta %v", input.MoveVector, input.Delta)
+	if ascent.MoveVector != (mgl32.Vec2{}) || ascent.Delta[1] <= 0 || ascent.Delta[0] != 0 || ascent.Delta[2] != 0 {
+		t.Fatalf("chunk-fly ascent = move %v delta %v", ascent.MoveVector, ascent.Delta)
 	}
-	if input.Position[1] != 64 {
-		t.Fatalf("horizontal diagnostic altitude = %f, want 64", input.Position[1])
+
+	state.correct(mgl32.Vec3{0, fly.targetY, 0}, 0, 0, 0)
+	cruise := authInputPacket(state, 2)
+	if cruise.InputData.Load(packet.InputFlagAscend) || cruise.InputData.Load(packet.InputFlagWantUp) || cruise.InputData.Load(packet.InputFlagDescend) {
+		t.Fatalf("cruise retained vertical flight flags: %+v", cruise.InputData)
 	}
-	if input.AnalogueMoveVector != (mgl32.Vec2{}) {
-		t.Fatalf("reference BDS tuple must leave analogue move vector unset: %v", input.AnalogueMoveVector)
+	if cruise.MoveVector != (mgl32.Vec2{0, 1}) || cruise.Delta[2] <= 0 || cruise.Delta[1] != 0 {
+		t.Fatalf("chunk-fly cruise = move %v delta %v", cruise.MoveVector, cruise.Delta)
 	}
-	if input.RawMoveVector[0] != 0 || math.Abs(float64(input.RawMoveVector[1]-chunkFlyStepPerTick)) > 1e-6 {
-		t.Fatalf("raw move vector = %v, want local per-tick displacement %f", input.RawMoveVector, chunkFlyStepPerTick)
+	if cruise.AnalogueMoveVector != (mgl32.Vec2{}) {
+		t.Fatalf("reference BDS tuple must leave analogue move vector unset: %v", cruise.AnalogueMoveVector)
+	}
+	if cruise.RawMoveVector[0] != 0 || math.Abs(float64(cruise.RawMoveVector[1]-chunkFlyStepPerTick)) > 1e-6 {
+		t.Fatalf("raw move vector = %v, want local per-tick displacement %f", cruise.RawMoveVector, chunkFlyStepPerTick)
 	}
 }
 
@@ -188,7 +197,7 @@ func TestChunkFlyHorizontalPredictionResumesFromServerCorrection(t *testing.T) {
 		t.Fatal(err)
 	}
 	state.setFlyingConfirmed(true)
-	corrected := mgl32.Vec3{10, 90, 20}
+	corrected := mgl32.Vec3{10, fly.targetY, 20}
 	state.correct(corrected, 0, 90, 90)
 
 	input := authInputPacket(state, 1)
@@ -204,6 +213,25 @@ func TestChunkFlyHorizontalPredictionResumesFromServerCorrection(t *testing.T) {
 	_, _, corrections := state.telemetrySnapshot()
 	if corrections != 1 {
 		t.Fatalf("server corrections = %d, want 1", corrections)
+	}
+}
+
+func TestChunkFlyDescendsAfterAuthoritativeOvershoot(t *testing.T) {
+	state := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
+	writer := &recordingPacketWriter{}
+	fly := NewChunkFlyAction(state, writer, 0)
+	if err := fly.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state.setFlyingConfirmed(true)
+	state.correct(mgl32.Vec3{0, fly.targetY + 4, 0}, 0, 0, 0)
+
+	input := authInputPacket(state, 1)
+	if !input.InputData.Load(packet.InputFlagDescend) || !input.InputData.Load(packet.InputFlagWantDown) {
+		t.Fatalf("overshoot did not request descent: %+v", input.InputData)
+	}
+	if input.MoveVector != (mgl32.Vec2{}) || input.Delta[1] >= 0 || input.Delta[0] != 0 || input.Delta[2] != 0 {
+		t.Fatalf("overshoot descent = move %v delta %v", input.MoveVector, input.Delta)
 	}
 }
 
