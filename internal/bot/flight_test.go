@@ -42,7 +42,7 @@ func TestChunkFlyRequestsServerAbilityBeforePredictingMovement(t *testing.T) {
 	if !input.InputData.Load(packet.InputFlagBlockBreakingDelayEnabled) {
 		t.Fatal("auth input must include the normal Bedrock block-breaking-delay baseline flag")
 	}
-	if input.InputMode != packet.InputModeTouch || input.PlayMode != packet.PlayModeNormal || input.InteractionModel != packet.InteractionModelTouch {
+	if input.InputMode != packet.InputModeMouse || input.PlayMode != packet.PlayModeScreen || input.InteractionModel != packet.InteractionModelTouch {
 		t.Fatalf("BDS input tuple = mode %d play %d interaction %d", input.InputMode, input.PlayMode, input.InteractionModel)
 	}
 	if input.MoveVector != (mgl32.Vec2{}) || input.Delta != (mgl32.Vec3{}) {
@@ -126,7 +126,7 @@ func TestChunkFlySeedsPublisherWithoutSyntheticTeleportAck(t *testing.T) {
 
 func TestPublisherEyePositionUsesAuthoritativeBlockPosition(t *testing.T) {
 	got := publisherEyePosition(protocol.BlockPos{266, 70, 159})
-	want := mgl32.Vec3{266.5, 70 + playerEyeHeight, 159.5}
+	want := mgl32.Vec3{266.5, 70 + playerEyeHeight - 1, 159.5}
 	if got != want {
 		t.Fatalf("publisher eye position = %v, want %v", got, want)
 	}

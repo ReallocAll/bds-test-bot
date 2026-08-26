@@ -12,7 +12,7 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
 
-const chunkWalkStepPerTick = float32(0.18)
+const chunkWalkStepPerTick = float32(4.317 / 20)
 const movementStartDelay = 2 * time.Second
 
 type packetWriter interface {
@@ -335,6 +335,10 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 	snapshot := s.inputSnapshot()
 	flags := protocol.NewInputFlags(packet.InputFlagCount)
 	flags.Set(packet.InputFlagBlockBreakingDelayEnabled)
+	if snapshot.moveVector != (mgl32.Vec2{}) && !snapshot.flightRequested {
+		flags.Set(packet.InputFlagVerticalCollision)
+		snapshot.delta[1] = -0.08 * 0.98
+	}
 	if snapshot.handledTeleport {
 		flags.Set(packet.InputFlagHandledTeleport)
 	}
@@ -404,8 +408,8 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 		MoveVector:        moveVector,
 		HeadYaw:           snapshot.headYaw,
 		InputData:         flags,
-		InputMode:         packet.InputModeTouch,
-		PlayMode:          packet.PlayModeNormal,
+		InputMode:         packet.InputModeMouse,
+		PlayMode:          packet.PlayModeScreen,
 		InteractionModel:  packet.InteractionModelTouch,
 		InteractPitch:     snapshot.pitch,
 		InteractYaw:       snapshot.yaw,

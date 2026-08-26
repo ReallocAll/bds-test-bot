@@ -178,6 +178,28 @@ func runInstance(
 		return stageError(ExitRuntime, "output", err)
 	}
 
+	// BDS 1.26.44 requires the client loading-screen lifecycle to finish
+	// before movement input is accepted consistently. Match the current
+	// headless-client cadence rather than starting PlayerAuthInput immediately.
+	if err := conn.WritePacket(&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeStart}); err != nil {
+		return stageError(ExitRuntime, "loading-screen-start", err)
+	}
+	loadingTimer := time.NewTimer(140 * time.Millisecond)
+	select {
+	case <-ctx.Done():
+		if !loadingTimer.Stop() {
+			<-loadingTimer.C
+		}
+		return nil
+	case <-loadingTimer.C:
+	}
+	if err := conn.WritePacket(&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeEnd}); err != nil {
+		return stageError(ExitRuntime, "loading-screen-end", err)
+	}
+	if err := out.Emit("client_prepared", map[string]any{"sequence": "loading-screen-140ms"}); err != nil {
+		return stageError(ExitRuntime, "output", err)
+	}
+
 	if err := conn.WritePacket(&packet.RequestChunkRadius{
 		ChunkRadius:    cfg.ChunkRadius,
 		MaxChunkRadius: uint8(cfg.ChunkRadius),
@@ -272,7 +294,7 @@ func runInstance(
 			chunkX, chunkZ := x>>4, z>>4
 			samePublisher := publisherSet && x == publisherX && y == publisherY && z == publisherZ
 			changedChunk := !publisherSet || chunkX != publisherChunkX || chunkZ != publisherChunkZ
-			if cfg.Scenario == ScenarioChunkFly && samePublisher {
+			if (cfg.Scenario == ScenarioChunkWalk || cfg.Scenario == ScenarioChunkFly) && samePublisher {
 				// BDS currently sends an initial one-shot publisher at 0,0,0, then
 				// repeatedly publishes the real player block position. Two identical
 				// consecutive publisher positions give us server-owned spawn evidence
@@ -385,7 +407,7 @@ func runInstance(
 			}
 		}
 
-		if onlineState && cfg.Scenario == ScenarioChunkFly && !time.Now().Before(nextProgress) {
+		if onlineState && (cfg.Scenario == ScenarioChunkWalk || cfg.Scenario == ScenarioChunkFly) && !time.Now().Before(nextProgress) {
 			position, flying, corrections := state.telemetrySnapshot()
 			nextInputTick, tickSynced := state.tickSnapshot()
 			positionReady := state.positionReadySnapshot()
