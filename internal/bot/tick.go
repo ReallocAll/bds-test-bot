@@ -33,18 +33,19 @@ type inputControl struct {
 }
 
 type playerState struct {
-	mu                sync.Mutex
-	position          mgl32.Vec3
-	positionReady     bool
-	pitch             float32
-	yaw               float32
-	headYaw           float32
-	handledTeleport   bool
-	flyingConfirmed   bool
-	serverCorrections uint64
-	serverTick        uint64
-	tickSynced        bool
-	control           inputControl
+	mu                 sync.Mutex
+	position           mgl32.Vec3
+	positionReady      bool
+	pitch              float32
+	yaw                float32
+	headYaw            float32
+	handledTeleport    bool
+	flyingConfirmed    bool
+	flightStartPending bool
+	serverCorrections  uint64
+	serverTick         uint64
+	tickSynced         bool
+	control            inputControl
 }
 
 type authInputSnapshot struct {
@@ -58,6 +59,7 @@ type authInputSnapshot struct {
 	jumping           bool
 	wasJumping        bool
 	flightRequested   bool
+	startFlying       bool
 	flyingConfirmed   bool
 	verticalDirection float32
 }
@@ -176,6 +178,7 @@ func (s *playerState) setIdleControl() {
 	s.control.overridePitch = false
 	s.control.jump = false
 	s.control.fly = false
+	s.flightStartPending = false
 }
 
 func (s *playerState) setMoveControl(vector mgl32.Vec2, stepPerTick, yaw float32) {
@@ -218,6 +221,12 @@ func (s *playerState) setJumpControl(jump bool) {
 	s.control.jump = jump
 }
 
+func (s *playerState) queueFlightStartTransition() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.flightStartPending = true
+}
+
 func (s *playerState) inputSnapshot() authInputSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -229,9 +238,11 @@ func (s *playerState) inputSnapshot() authInputSnapshot {
 		headYaw:         s.headYaw,
 		handledTeleport: s.handledTeleport,
 		flightRequested: s.control.fly,
+		startFlying:     s.flightStartPending,
 		flyingConfirmed: s.flyingConfirmed,
 	}
 	s.handledTeleport = false
+	s.flightStartPending = false
 
 	if s.control.overridePitch {
 		snapshot.pitch = s.control.pitch
@@ -313,7 +324,7 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 		flags.Set(packet.InputFlagRight)
 	}
 
-	if snapshot.flightRequested {
+	if snapshot.startFlying {
 		flags.Set(packet.InputFlagStartFlying)
 	}
 	if snapshot.verticalDirection > 0 {
