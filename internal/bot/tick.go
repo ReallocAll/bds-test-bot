@@ -12,7 +12,10 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
 
-const chunkWalkStepPerTick = float32(0.18)
+const (
+	chunkWalkStepPerTick = float32(0.18)
+	movementStartDelay   = 2 * time.Second
+)
 
 type packetWriter interface {
 	WritePacket(packet.Packet) error
@@ -388,6 +391,23 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 }
 
 func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, cfg Config, headingYaw float32, botName string, entityRuntimeID uint64) error {
+	// BDS does not accept movement immediately after DoSpawn has returned. A
+	// current BDS integration client (go-test-bds) requires the same two-second
+	// settle window before starting its movement tick loop. Keep idle unchanged,
+	// but defer both traversal scenarios so their first PlayerAuthInput starts
+	// after the server has fully activated the player session.
+	if cfg.Scenario == ScenarioChunkWalk || cfg.Scenario == ScenarioChunkFly {
+		timer := time.NewTimer(movementStartDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil
+		case <-timer.C:
+		}
+	}
+
 	ticker := time.NewTicker(time.Second / 20)
 	defer ticker.Stop()
 
