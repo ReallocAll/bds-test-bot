@@ -19,6 +19,7 @@ func applyFlightMovement(s *playerState, snapshot *authInputSnapshot) {
 		snapshot.verticalDirection = 1
 		snapshot.delta[1] = step
 		s.position[1] += step
+		snapshot.committedDelta[1] = step
 		return
 	}
 	if remaining < -chunkFlyAltitudeTolerance {
@@ -30,6 +31,7 @@ func applyFlightMovement(s *playerState, snapshot *authInputSnapshot) {
 		snapshot.verticalDirection = -1
 		snapshot.delta[1] = -step
 		s.position[1] -= step
+		snapshot.committedDelta[1] = -step
 		return
 	}
 	applyHorizontalMovement(s, snapshot, s.control.moveStep)

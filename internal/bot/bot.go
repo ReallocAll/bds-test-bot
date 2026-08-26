@@ -343,7 +343,7 @@ func runInstance(
 			}
 		case *packet.CorrectPlayerMovePrediction:
 			if p.PredictionType == packet.PredictionTypePlayer {
-				state.correct(p.Position, p.Rotation[0], p.Rotation[1], p.Rotation[1])
+				state.correctPrediction(p.Position, p.Rotation[0], p.Rotation[1], p.Rotation[1], p.Tick)
 				state.syncServerTick(p.Tick)
 			}
 		case *packet.UpdateAttributes:

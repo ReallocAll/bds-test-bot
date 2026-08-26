@@ -33,6 +33,13 @@ type inputControl struct {
 	verticalStep  float32
 }
 
+type predictionFrame struct {
+	tick  uint64
+	delta mgl32.Vec3
+}
+
+const predictionHistoryLimit = 256
+
 type playerState struct {
 	mu                  sync.Mutex
 	position            mgl32.Vec3
@@ -48,6 +55,7 @@ type playerState struct {
 	serverCorrections   uint64
 	serverTick          uint64
 	tickSynced          bool
+	predictionHistory   []predictionFrame
 	control             inputControl
 }
 
@@ -66,6 +74,7 @@ type authInputSnapshot struct {
 	flyingConfirmed   bool
 	correctionProbe   bool
 	verticalDirection float32
+	committedDelta    mgl32.Vec3
 }
 
 func validPlayerPositionY(y float32) bool {
@@ -102,6 +111,37 @@ func (s *playerState) correct(position mgl32.Vec3, pitch, yaw, headYaw float32) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.position = position
+	if validPlayerPositionY(position[1]) {
+		s.positionReady = true
+	}
+	s.pitch = pitch
+	s.yaw = yaw
+	s.headYaw = headYaw
+	s.serverCorrections++
+}
+
+func (s *playerState) recordPrediction(tick uint64, delta mgl32.Vec3) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.predictionHistory = append(s.predictionHistory, predictionFrame{tick: tick, delta: delta})
+	if len(s.predictionHistory) > predictionHistoryLimit {
+		s.predictionHistory = append([]predictionFrame(nil), s.predictionHistory[len(s.predictionHistory)-predictionHistoryLimit:]...)
+	}
+}
+
+func (s *playerState) correctPrediction(position mgl32.Vec3, pitch, yaw, headYaw float32, tick uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := position
+	keep := s.predictionHistory[:0]
+	for _, frame := range s.predictionHistory {
+		if frame.tick > tick {
+			current = current.Add(frame.delta)
+			keep = append(keep, frame)
+		}
+	}
+	s.predictionHistory = keep
+	s.position = current
 	if validPlayerPositionY(position[1]) {
 		s.positionReady = true
 	}
@@ -317,6 +357,8 @@ func applyHorizontalMovement(s *playerState, snapshot *authInputSnapshot, stepPe
 	snapshot.delta[2] = float32(math.Sin(yawRad)*strafe+math.Cos(yawRad)*forward) * stepPerTick
 	s.position[0] += snapshot.delta[0]
 	s.position[2] += snapshot.delta[2]
+	snapshot.committedDelta[0] = snapshot.delta[0]
+	snapshot.committedDelta[2] = snapshot.delta[2]
 }
 
 func scenarioHeading(baseYaw float32, index, count int) float32 {
@@ -395,6 +437,8 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 		horizontalDelta := float32(math.Hypot(float64(snapshot.delta[0]), float64(snapshot.delta[2])))
 		rawMoveVector = moveVector.Mul(horizontalDelta)
 	}
+
+	s.recordPrediction(tick, snapshot.committedDelta)
 
 	// Match the coherent input tuple used by go-test-bds, a current BDS test
 	// client on the same gophertunnel protocol family. In particular RawMoveVector

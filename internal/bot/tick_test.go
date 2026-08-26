@@ -167,3 +167,39 @@ func TestChunkFlyCorrectionProbeHandsOffToSafeAscent(t *testing.T) {
 		t.Fatalf("safe ascent did not advance from correction: position=%v delta=%v", ascent.Position, ascent.Delta)
 	}
 }
+
+func TestCorrectionReplaysPredictionsAfterCorrectedTick(t *testing.T) {
+	state := newPlayerState(mgl32.Vec3{10, 70, 20}, 0, 0)
+	state.setMoveControl(mgl32.Vec2{0, 1}, chunkWalkStepPerTick, 0)
+	_ = authInputPacket(state, 40)
+	_ = authInputPacket(state, 41)
+	_ = authInputPacket(state, 42)
+
+	corrected := mgl32.Vec3{10, 70, 20.25}
+	state.correctPrediction(corrected, 0, 0, 0, 40)
+	position, _, corrections := state.telemetrySnapshot()
+	wantZ := corrected[2] + 2*chunkWalkStepPerTick
+	if math.Abs(float64(position[2]-wantZ)) > 1e-5 || position[0] != corrected[0] || position[1] != corrected[1] {
+		t.Fatalf("replayed position = %v, want x=%f y=%f z=%f", position, corrected[0], corrected[1], wantZ)
+	}
+	if corrections != 1 {
+		t.Fatalf("server corrections = %d, want 1", corrections)
+	}
+}
+
+func TestCorrectionReplayDoesNotCommitGroundGravityDelta(t *testing.T) {
+	state := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
+	state.setMoveControl(mgl32.Vec2{0, 1}, chunkWalkStepPerTick, 0)
+	pk := authInputPacket(state, 2)
+	if pk.Delta[1] >= 0 {
+		t.Fatalf("walk packet should carry ground gravity delta: %v", pk.Delta)
+	}
+	state.correctPrediction(mgl32.Vec3{0, 64, 0}, 0, 0, 0, 1)
+	position, _, _ := state.telemetrySnapshot()
+	if position[1] != 64 {
+		t.Fatalf("gravity delta was replayed into prediction position: %v", position)
+	}
+	if math.Abs(float64(position[2]-chunkWalkStepPerTick)) > 1e-5 {
+		t.Fatalf("horizontal prediction was not replayed: %v", position)
+	}
+}
