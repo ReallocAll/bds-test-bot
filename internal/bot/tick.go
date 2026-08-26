@@ -261,10 +261,9 @@ func (s *playerState) inputSnapshot() authInputSnapshot {
 			// until the first stable server publisher position seeds the player.
 			snapshot.moveVector = mgl32.Vec2{}
 		} else {
-			// Diagnostic path: keep the server-owned spawn altitude unchanged and
-			// exercise the same client-predicted horizontal movement model that
-			// already works for chunk-walk. This isolates flying+horizontal input
-			// from the previously rejected vertical ascent prediction.
+			// Keep the server-owned spawn altitude unchanged while validating the
+			// server-accepted horizontal movement stream. Altitude control is
+			// layered back on only after BDS accepts this prediction history.
 			applyHorizontalMovement(s, &snapshot, s.control.moveStep)
 		}
 	} else if snapshot.moveVector != (mgl32.Vec2{}) && s.control.moveStep != 0 {
@@ -356,23 +355,35 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 		float32(math.Cos(yawRad) * math.Cos(pitchRad)),
 	}
 
+	moveVector := snapshot.moveVector
+	rawMoveVector := mgl32.Vec2{}
+	if lengthSquared := moveVector.LenSqr(); lengthSquared > 0 {
+		moveVector = moveVector.Mul(1 / float32(math.Sqrt(float64(lengthSquared))))
+		horizontalDelta := float32(math.Hypot(float64(snapshot.delta[0]), float64(snapshot.delta[2])))
+		rawMoveVector = moveVector.Mul(horizontalDelta)
+	}
+
+	// Match the coherent input tuple used by go-test-bds, a current BDS test
+	// client on the same gophertunnel protocol family. In particular RawMoveVector
+	// is the local movement magnitude for this tick, while MoveVector is the
+	// normalised direction; reporting a full-scale raw stick alongside a much
+	// smaller predicted Delta makes the packet internally inconsistent.
 	return &packet.PlayerAuthInput{
-		Pitch:              snapshot.pitch,
-		Yaw:                snapshot.yaw,
-		Position:           snapshot.position,
-		MoveVector:         snapshot.moveVector,
-		HeadYaw:            snapshot.headYaw,
-		InputData:          flags,
-		InputMode:          packet.InputModeMouse,
-		PlayMode:           packet.PlayModeScreen,
-		InteractionModel:   packet.InteractionModelCrosshair,
-		InteractPitch:      snapshot.pitch,
-		InteractYaw:        snapshot.yaw,
-		Tick:               tick,
-		Delta:              snapshot.delta,
-		AnalogueMoveVector: snapshot.moveVector,
-		CameraOrientation:  camera,
-		RawMoveVector:      snapshot.moveVector,
+		Pitch:             snapshot.pitch,
+		Yaw:               snapshot.yaw,
+		Position:          snapshot.position,
+		MoveVector:        moveVector,
+		HeadYaw:           snapshot.headYaw,
+		InputData:         flags,
+		InputMode:         packet.InputModeTouch,
+		PlayMode:          packet.PlayModeNormal,
+		InteractionModel:  packet.InteractionModelTouch,
+		InteractPitch:     snapshot.pitch,
+		InteractYaw:       snapshot.yaw,
+		Tick:              tick,
+		Delta:             snapshot.delta,
+		CameraOrientation: camera,
+		RawMoveVector:     rawMoveVector,
 	}
 }
 
