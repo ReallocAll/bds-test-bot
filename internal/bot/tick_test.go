@@ -82,13 +82,13 @@ func TestTickLoopStopsOnCancellation(t *testing.T) {
 	}
 }
 
-func TestTraversalTickLoopCancelsDuringSpawnSettle(t *testing.T) {
+func TestChunkWalkTickLoopCancelsDuringSpawnSettle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	writer := &countingWriter{}
 	state := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
 	done := make(chan error, 1)
 	cfg := DefaultConfig()
-	cfg.Scenario = ScenarioChunkFly
+	cfg.Scenario = ScenarioChunkWalk
 	go func() { done <- runTickLoop(ctx, writer, state, cfg, 0, "TestBot", 1) }()
 	time.Sleep(20 * time.Millisecond)
 	cancel()
@@ -98,9 +98,29 @@ func TestTraversalTickLoopCancelsDuringSpawnSettle(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("chunk-fly tick loop did not cancel during spawn settle window")
+		t.Fatal("chunk-walk tick loop did not cancel during spawn settle window")
 	}
 	if writer.count.Load() != 0 {
-		t.Fatalf("sent %d packets before movement settle completed", writer.count.Load())
+		t.Fatalf("sent %d packets before chunk-walk movement settle completed", writer.count.Load())
+	}
+}
+
+func TestPublisherCannotSeedAfterAuthInputStarts(t *testing.T) {
+	state := newPlayerState(mgl32.Vec3{0.5, 32769.62, 0.5}, 0, 0)
+	if state.positionReadySnapshot() {
+		t.Fatal("placeholder StartGame position unexpectedly ready")
+	}
+	if tick := state.nextInputTick(); tick != 0 {
+		t.Fatalf("bootstrap tick = %d, want 0", tick)
+	}
+	if state.acceptPublisherPosition(mgl32.Vec3{0.5, 88.62, 0.5}) {
+		t.Fatal("publisher seeded prediction after auth input stream started")
+	}
+	if state.positionReadySnapshot() {
+		t.Fatal("publisher made correction-bootstrap state ready")
+	}
+	state.correct(mgl32.Vec3{0.5, 88.62, 0.5}, 0, 0, 0)
+	if !state.positionReadySnapshot() {
+		t.Fatal("server correction did not establish authoritative position")
 	}
 }
