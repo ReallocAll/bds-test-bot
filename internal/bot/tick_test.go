@@ -81,3 +81,26 @@ func TestTickLoopStopsOnCancellation(t *testing.T) {
 		t.Fatal("tick loop did not send any input packets")
 	}
 }
+
+func TestTraversalTickLoopCancelsDuringSpawnSettle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	writer := &countingWriter{}
+	state := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
+	done := make(chan error, 1)
+	cfg := DefaultConfig()
+	cfg.Scenario = ScenarioChunkFly
+	go func() { done <- runTickLoop(ctx, writer, state, cfg, 0, "TestBot", 1) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("chunk-fly tick loop did not cancel during spawn settle window")
+	}
+	if writer.count.Load() != 0 {
+		t.Fatalf("sent %d packets before movement settle completed", writer.count.Load())
+	}
+}
