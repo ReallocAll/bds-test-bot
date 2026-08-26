@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"math"
 	"sync/atomic"
 	"testing"
 
@@ -41,8 +42,8 @@ func TestChunkFlyRequestsServerAbilityBeforePredictingMovement(t *testing.T) {
 	if !input.InputData.Load(packet.InputFlagBlockBreakingDelayEnabled) {
 		t.Fatal("auth input must include the normal Bedrock block-breaking-delay baseline flag")
 	}
-	if input.InputMode != packet.InputModeMouse || input.PlayMode != packet.PlayModeScreen || input.InteractionModel != packet.InteractionModelCrosshair {
-		t.Fatalf("desktop input tuple = mode %d play %d interaction %d", input.InputMode, input.PlayMode, input.InteractionModel)
+	if input.InputMode != packet.InputModeTouch || input.PlayMode != packet.PlayModeNormal || input.InteractionModel != packet.InteractionModelTouch {
+		t.Fatalf("BDS input tuple = mode %d play %d interaction %d", input.InputMode, input.PlayMode, input.InteractionModel)
 	}
 	if input.MoveVector != (mgl32.Vec2{}) || input.Delta != (mgl32.Vec3{}) {
 		t.Fatalf("movement predicted before server flight acknowledgement: %+v", input)
@@ -171,8 +172,11 @@ func TestChunkFlyHorizontalDiagnosticKeepsAuthoritativeAltitude(t *testing.T) {
 	if input.Position[1] != 64 {
 		t.Fatalf("horizontal diagnostic altitude = %f, want 64", input.Position[1])
 	}
-	if input.RawMoveVector != input.MoveVector || input.AnalogueMoveVector != input.MoveVector {
-		t.Fatalf("flight packet missing normal raw/analogue movement fields: %+v", input)
+	if input.AnalogueMoveVector != (mgl32.Vec2{}) {
+		t.Fatalf("reference BDS tuple must leave analogue move vector unset: %v", input.AnalogueMoveVector)
+	}
+	if input.RawMoveVector[0] != 0 || math.Abs(float64(input.RawMoveVector[1]-chunkFlyStepPerTick)) > 1e-6 {
+		t.Fatalf("raw move vector = %v, want local per-tick displacement %f", input.RawMoveVector, chunkFlyStepPerTick)
 	}
 }
 
