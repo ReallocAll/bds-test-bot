@@ -12,12 +12,10 @@ import (
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
 
-const (
-	chunkWalkStepPerTick      = float32(0.18)
-	movementStartDelay        = 2 * time.Second
-	movementBootstrapGravity  = float32(0.08)
-	movementBootstrapDrag     = float32(0.02)
-)
+const chunkWalkStepPerTick = float32(0.18)
+const movementStartDelay = 2 * time.Second
+const movementBootstrapGravity = float32(0.08)
+const movementBootstrapDrag = float32(0.02)
 
 type packetWriter interface {
 	WritePacket(packet.Packet) error
