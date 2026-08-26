@@ -13,8 +13,10 @@ import (
 )
 
 const (
-	chunkWalkStepPerTick = float32(0.18)
-	movementStartDelay   = 2 * time.Second
+	chunkWalkStepPerTick      = float32(0.18)
+	movementStartDelay        = 2 * time.Second
+	movementBootstrapGravity  = float32(0.08)
+	movementBootstrapDrag     = float32(0.02)
 )
 
 type packetWriter interface {
@@ -49,6 +51,8 @@ type playerState struct {
 	serverCorrections  uint64
 	serverTick         uint64
 	tickSynced         bool
+	bootstrapVelocityY float32
+	bootstrapDeltaY    float32
 	control            inputControl
 }
 
@@ -88,6 +92,8 @@ func (s *playerState) update(position mgl32.Vec3, pitch, yaw, headYaw float32, t
 	s.position = position
 	if validPlayerPositionY(position[1]) {
 		s.positionReady = true
+		s.bootstrapVelocityY = 0
+		s.bootstrapDeltaY = 0
 	}
 	s.pitch = pitch
 	s.yaw = yaw
@@ -104,6 +110,8 @@ func (s *playerState) correct(position mgl32.Vec3, pitch, yaw, headYaw float32) 
 	s.position = position
 	if validPlayerPositionY(position[1]) {
 		s.positionReady = true
+		s.bootstrapVelocityY = 0
+		s.bootstrapDeltaY = 0
 	}
 	s.pitch = pitch
 	s.yaw = yaw
@@ -122,6 +130,8 @@ func (s *playerState) acceptPublisherPosition(position mgl32.Vec3) bool {
 	// publisher remains observability-only evidence.
 	s.position = position
 	s.positionReady = true
+	s.bootstrapVelocityY = 0
+	s.bootstrapDeltaY = 0
 	return true
 }
 
@@ -140,6 +150,23 @@ func (s *playerState) positionReadySnapshot() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.positionReady
+}
+
+func (s *playerState) stepCorrectionBootstrap() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.positionReady {
+		return false
+	}
+	// BDS 1.26.44 may place the client at a temporary Y≈32768 in StartGame.
+	// A real client still advances airborne physics before the server sends the
+	// first CorrectPlayerMovePrediction. Match the vanilla gravity/drag order so
+	// the first frame carries DeltaY=-0.0784 instead of an impossible static
+	// placeholder position. The correction replaces this bootstrap prediction.
+	s.bootstrapVelocityY = (s.bootstrapVelocityY - movementBootstrapGravity) * (1 - movementBootstrapDrag)
+	s.bootstrapDeltaY = s.bootstrapVelocityY
+	s.position[1] += s.bootstrapDeltaY
+	return true
 }
 
 func (s *playerState) syncServerTick(serverTick uint64) {
@@ -247,6 +274,10 @@ func (s *playerState) inputSnapshot() authInputSnapshot {
 	}
 	s.handledTeleport = false
 	s.flightStartPending = false
+	if !s.positionReady && s.bootstrapDeltaY != 0 {
+		snapshot.delta[1] = s.bootstrapDeltaY
+		s.bootstrapDeltaY = 0
+	}
 
 	if s.control.overridePitch {
 		snapshot.pitch = s.control.pitch
@@ -261,9 +292,9 @@ func (s *playerState) inputSnapshot() authInputSnapshot {
 		snapshot.moveVector = mgl32.Vec2{}
 	} else if s.control.fly {
 		if !s.flyingConfirmed || !s.positionReady {
-			// Keep sending an idle prediction stream from StartGame's temporary
-			// coordinates until BDS returns a movement correction with the real
-			// player position. Do not predict flight from the placeholder.
+			// Keep sending the bootstrap prediction stream until BDS returns a
+			// movement correction with the real player position. Do not predict
+			// flight from the temporary StartGame altitude.
 			snapshot.moveVector = mgl32.Vec2{}
 		} else {
 			// Creative flight is server-confirmed before prediction begins. Climb
@@ -393,9 +424,9 @@ func authInputPacket(s *playerState, tick uint64) *packet.PlayerAuthInput {
 }
 
 func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, cfg Config, headingYaw float32, botName string, entityRuntimeID uint64) error {
-	// Preserve the settle delay for walking. Chunk-fly instead starts a zero-
-	// movement auth stream immediately so BDS can establish its prediction
-	// history and return CorrectPlayerMovePrediction before any flight motion.
+	// Preserve the settle delay for walking. Chunk-fly instead starts a gravity
+	// bootstrap stream immediately so BDS can establish prediction history and
+	// return CorrectPlayerMovePrediction before real flight motion begins.
 	if cfg.Scenario == ScenarioChunkWalk {
 		timer := time.NewTimer(movementStartDelay)
 		select {
@@ -409,6 +440,7 @@ func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, c
 	}
 
 	if cfg.Scenario == ScenarioChunkFly {
+		state.stepCorrectionBootstrap()
 		tick := state.nextInputTick()
 		if err := writer.WritePacket(authInputPacket(state, tick)); err != nil {
 			if ctx.Err() != nil {
@@ -435,6 +467,9 @@ func runTickLoop(ctx context.Context, writer packetWriter, state *playerState, c
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+			if cfg.Scenario == ScenarioChunkFly && !state.positionReadySnapshot() {
+				state.stepCorrectionBootstrap()
+			}
 			tick := state.nextInputTick()
 			if err := runner.Tick(ctx, action.TickContext{Tick: tick}); err != nil {
 				return err
