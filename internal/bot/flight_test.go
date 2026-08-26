@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/ReallocAll/bds-test-bot/internal/action"
 	"github.com/go-gl/mathgl/mgl32"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
@@ -35,7 +36,7 @@ func TestChunkFlyRequestsServerAbilityBeforePredictingMovement(t *testing.T) {
 
 	input := authInputPacket(state, 1)
 	if !input.InputData.Load(packet.InputFlagStartFlying) {
-		t.Fatal("unacknowledged flight input must request StartFlying")
+		t.Fatal("flight transition input must request StartFlying")
 	}
 	if !input.InputData.Load(packet.InputFlagBlockBreakingDelayEnabled) {
 		t.Fatal("auth input must include the normal Bedrock block-breaking-delay baseline flag")
@@ -45,6 +46,42 @@ func TestChunkFlyRequestsServerAbilityBeforePredictingMovement(t *testing.T) {
 	}
 	if input.MoveVector != (mgl32.Vec2{}) || input.Delta != (mgl32.Vec3{}) {
 		t.Fatalf("movement predicted before server flight acknowledgement: %+v", input)
+	}
+	steady := authInputPacket(state, 2)
+	if steady.InputData.Load(packet.InputFlagStartFlying) {
+		t.Fatal("StartFlying must be edge-triggered rather than asserted every input frame")
+	}
+}
+
+func TestChunkFlyRetriesFlightTransitionWithAbilityRequest(t *testing.T) {
+	ctx := context.Background()
+	state := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
+	writer := &recordingPacketWriter{}
+	fly := NewChunkFlyAction(state, writer, 0)
+	if err := fly.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = authInputPacket(state, 0)
+	for i := uint64(1); i < flightRequestRetryTicks; i++ {
+		if err := fly.Tick(ctx, action.TickContext{Tick: i}); err != nil {
+			t.Fatal(err)
+		}
+		if authInputPacket(state, i).InputData.Load(packet.InputFlagStartFlying) {
+			t.Fatalf("unexpected StartFlying retry at tick %d", i)
+		}
+	}
+	if err := fly.Tick(ctx, action.TickContext{Tick: flightRequestRetryTicks}); err != nil {
+		t.Fatal(err)
+	}
+	if len(writer.packets) != 2 {
+		t.Fatalf("flight request packets = %d, want initial + one retry", len(writer.packets))
+	}
+	retry := authInputPacket(state, flightRequestRetryTicks)
+	if !retry.InputData.Load(packet.InputFlagStartFlying) {
+		t.Fatal("ability retry must queue one matching StartFlying transition")
+	}
+	if authInputPacket(state, flightRequestRetryTicks+1).InputData.Load(packet.InputFlagStartFlying) {
+		t.Fatal("flight retry transition leaked into the following input frame")
 	}
 }
 
@@ -60,6 +97,9 @@ func TestChunkFlySeedsPublisherWithoutSyntheticTeleportAck(t *testing.T) {
 	}
 	state.setFlyingConfirmed(true)
 	blocked := authInputPacket(state, 1)
+	if !blocked.InputData.Load(packet.InputFlagStartFlying) {
+		t.Fatal("first publisher-waiting frame must carry the queued flight transition")
+	}
 	if blocked.MoveVector != (mgl32.Vec2{}) || blocked.Delta != (mgl32.Vec3{}) {
 		t.Fatalf("placeholder position generated movement before publisher evidence: %+v", blocked)
 	}
@@ -72,8 +112,8 @@ func TestChunkFlySeedsPublisherWithoutSyntheticTeleportAck(t *testing.T) {
 	if input.InputData.Load(packet.InputFlagHandledTeleport) {
 		t.Fatalf("chunk publisher must not synthesize HandledTeleport: %+v", input.InputData)
 	}
-	if !input.InputData.Load(packet.InputFlagStartFlying) {
-		t.Fatal("publisher-seeded flight must keep StartFlying asserted")
+	if input.InputData.Load(packet.InputFlagStartFlying) {
+		t.Fatal("StartFlying must not remain asserted after its transition frame")
 	}
 	if input.MoveVector != (mgl32.Vec2{0, 1}) || input.Delta[2] <= 0 || input.Delta[1] != 0 {
 		t.Fatalf("publisher-seeded horizontal prediction = move %v delta %v", input.MoveVector, input.Delta)
