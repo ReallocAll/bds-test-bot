@@ -1,0 +1,215 @@
+name: Apply Chunk-Fly Ascent Patch
+
+on:
+  push:
+    branches:
+      - feat/chunk-fly-scenario
+    paths:
+      - ".github/workflows/apply-chunk-fly-ascent.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/chunk-fly-scenario
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Apply ascent-before-traversal patch
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          tick = Path("internal/bot/tick.go")
+          text = tick.read_text()
+          old = '''\t\t} else {\n\t\t\t// Keep the server-owned spawn altitude unchanged while validating the\n\t\t\t// server-accepted horizontal movement stream. Altitude control is\n\t\t\t// layered back on only after BDS accepts this prediction history.\n\t\t\tapplyHorizontalMovement(s, &snapshot, s.control.moveStep)\n\t\t}\n'''
+          new = '''\t\t} else {\n\t\t\t// Creative flight is server-confirmed before prediction begins. Climb\n\t\t\t// vertically to the safe target first so terrain cannot pin the bot,\n\t\t\t// then begin horizontal chunk traversal.\n\t\t\tapplyFlightMovement(s, &snapshot)\n\t\t}\n'''
+          if old not in text:
+              raise SystemExit("tick.go horizontal-only flight target not found")
+          tick.write_text(text.replace(old, new, 1))
+
+          helper = Path("internal/bot/flight_movement.go")
+          helper.write_text('''package bot\n\nimport "github.com/go-gl/mathgl/mgl32"\n\nconst chunkFlyAltitudeTolerance = float32(0.05)\n\n// applyFlightMovement first reaches the server-derived safe flight altitude,\n// then starts horizontal traversal. Server MovePlayer/CorrectPlayerMovePrediction\n// updates replace s.position, so every following prediction resumes from the\n// latest authoritative state rather than from stale client-only coordinates.\nfunc applyFlightMovement(s *playerState, snapshot *authInputSnapshot) {\n\tremaining := s.control.flightTargetY - s.position[1]\n\tif remaining > chunkFlyAltitudeTolerance {\n\t\tsnapshot.moveVector = mgl32.Vec2{}\n\t\tstep := s.control.verticalStep\n\t\tif step <= 0 || step > remaining {\n\t\t\tstep = remaining\n\t\t}\n\t\tsnapshot.verticalDirection = 1\n\t\tsnapshot.delta[1] = step\n\t\ts.position[1] += step\n\t\treturn\n\t}\n\tif remaining < -chunkFlyAltitudeTolerance {\n\t\tsnapshot.moveVector = mgl32.Vec2{}\n\t\tstep := s.control.verticalStep\n\t\tif step <= 0 || step > -remaining {\n\t\t\tstep = -remaining\n\t\t}\n\t\tsnapshot.verticalDirection = -1\n\t\tsnapshot.delta[1] = -step\n\t\ts.position[1] -= step\n\t\treturn\n\t}\n\tapplyHorizontalMovement(s, snapshot, s.control.moveStep)\n}\n''')
+
+          tests = Path("internal/bot/flight_test.go")
+          text = tests.read_text()
+
+          def replace_func(name: str, body: str) -> None:
+              global text
+              pattern = rf"func {re.escape(name)}\(t \*testing\.T\) \{{.*?\n\}}\n\n"
+              updated, count = re.subn(pattern, body.rstrip() + "\n\n", text, count=1, flags=re.S)
+              if count != 1:
+                  raise SystemExit(f"test function {name} replacement count={count}")
+              text = updated
+
+          replace_func("TestChunkFlySeedsPublisherWithoutSyntheticTeleportAck", r'''func TestChunkFlySeedsPublisherWithoutSyntheticTeleportAck(t *testing.T) {
+\tstate := newPlayerState(mgl32.Vec3{12.5, 32769.625, -7.5}, 0, 0)
+\twriter := &recordingPacketWriter{}
+\tfly := NewChunkFlyAction(state, writer, 0)
+\tif state.positionReadySnapshot() {
+\t\tt.Fatal("placeholder StartGame altitude must not be position-ready")
+\t}
+\tif err := fly.Start(context.Background()); err != nil {
+\t\tt.Fatal(err)
+\t}
+\tstate.setFlyingConfirmed(true)
+\tblocked := authInputPacket(state, 1)
+\tif !blocked.InputData.Load(packet.InputFlagStartFlying) {
+\t\tt.Fatal("first publisher-waiting frame must carry the queued flight transition")
+\t}
+\tif blocked.MoveVector != (mgl32.Vec2{}) || blocked.Delta != (mgl32.Vec3{}) {
+\t\tt.Fatalf("placeholder position generated movement before publisher evidence: %+v", blocked)
+\t}
+
+\tpublisherPosition := mgl32.Vec3{12.5, 68 + playerEyeHeight, -7.5}
+\tif !state.acceptPublisherPosition(publisherPosition) {
+\t\tt.Fatal("stable server publisher position was not accepted")
+\t}
+\tinput := authInputPacket(state, 2)
+\tif input.InputData.Load(packet.InputFlagHandledTeleport) {
+\t\tt.Fatalf("chunk publisher must not synthesize HandledTeleport: %+v", input.InputData)
+\t}
+\tif input.InputData.Load(packet.InputFlagStartFlying) {
+\t\tt.Fatal("StartFlying must not remain asserted after its transition frame")
+\t}
+\tif input.MoveVector != (mgl32.Vec2{}) || input.Delta[1] <= 0 || input.Delta[0] != 0 || input.Delta[2] != 0 {
+\t\tt.Fatalf("publisher-seeded ascent prediction = move %v delta %v", input.MoveVector, input.Delta)
+\t}
+\tif !input.InputData.Load(packet.InputFlagAscend) || !input.InputData.Load(packet.InputFlagWantUp) {
+\t\tt.Fatalf("publisher-seeded flight did not request ascent: %+v", input.InputData)
+\t}
+\tif input.Position[1] <= publisherPosition[1] {
+\t\tt.Fatalf("publisher-seeded ascent did not increase altitude: %v", input.Position)
+\t}
+}''')
+
+          replace_func("TestPublisherTelemetryDoesNotOverwritePredictedFlightPosition", r'''func TestPublisherTelemetryDoesNotOverwritePredictedFlightPosition(t *testing.T) {
+\tstate := newPlayerState(mgl32.Vec3{4.5, 80, 8.5}, 0, 0)
+\twriter := &recordingPacketWriter{}
+\tfly := NewChunkFlyAction(state, writer, 0)
+\tif err := fly.Start(context.Background()); err != nil {
+\t\tt.Fatal(err)
+\t}
+\tstate.setFlyingConfirmed(true)
+\tfirst := authInputPacket(state, 7)
+\tif first.Delta[1] <= 0 || first.Delta[0] != 0 || first.Delta[2] != 0 {
+\t\tt.Fatalf("first predicted flight delta = %v", first.Delta)
+\t}
+\tbefore, _, _ := state.telemetrySnapshot()
+\t// NetworkChunkPublisherUpdate remains server evidence only after the initial
+\t// spawn seed. The bot read loop no longer calls observePublisherPosition here.
+\tafter, _, _ := state.telemetrySnapshot()
+\tif after != before {
+\t\tt.Fatalf("publisher telemetry overwrote prediction: before=%v after=%v", before, after)
+\t}
+}''')
+
+          replace_func("TestChunkFlyHorizontalDiagnosticKeepsAuthoritativeAltitude", r'''func TestChunkFlyClimbsBeforeHorizontalTraversal(t *testing.T) {
+\tstate := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
+\twriter := &recordingPacketWriter{}
+\tfly := NewChunkFlyAction(state, writer, 0)
+\tif err := fly.Start(context.Background()); err != nil {
+\t\tt.Fatal(err)
+\t}
+\tstate.setFlyingConfirmed(true)
+
+\tascent := authInputPacket(state, 1)
+\tif !ascent.InputData.Load(packet.InputFlagAscend) || !ascent.InputData.Load(packet.InputFlagWantUp) {
+\t\tt.Fatalf("chunk-fly ascent flags missing: %+v", ascent.InputData)
+\t}
+\tif ascent.MoveVector != (mgl32.Vec2{}) || ascent.Delta[1] <= 0 || ascent.Delta[0] != 0 || ascent.Delta[2] != 0 {
+\t\tt.Fatalf("chunk-fly ascent = move %v delta %v", ascent.MoveVector, ascent.Delta)
+\t}
+
+\tstate.correct(mgl32.Vec3{0, fly.targetY, 0}, 0, 0, 0)
+\tcruise := authInputPacket(state, 2)
+\tif cruise.InputData.Load(packet.InputFlagAscend) || cruise.InputData.Load(packet.InputFlagWantUp) || cruise.InputData.Load(packet.InputFlagDescend) {
+\t\tt.Fatalf("cruise retained vertical flight flags: %+v", cruise.InputData)
+\t}
+\tif cruise.MoveVector != (mgl32.Vec2{0, 1}) || cruise.Delta[2] <= 0 || cruise.Delta[1] != 0 {
+\t\tt.Fatalf("chunk-fly cruise = move %v delta %v", cruise.MoveVector, cruise.Delta)
+\t}
+\tif cruise.AnalogueMoveVector != (mgl32.Vec2{}) {
+\t\tt.Fatalf("reference BDS tuple must leave analogue move vector unset: %v", cruise.AnalogueMoveVector)
+\t}
+\tif cruise.RawMoveVector[0] != 0 || math.Abs(float64(cruise.RawMoveVector[1]-chunkFlyStepPerTick)) > 1e-6 {
+\t\tt.Fatalf("raw move vector = %v, want local per-tick displacement %f", cruise.RawMoveVector, chunkFlyStepPerTick)
+\t}
+}''')
+
+          replace_func("TestChunkFlyHorizontalPredictionResumesFromServerCorrection", r'''func TestChunkFlyHorizontalPredictionResumesFromServerCorrection(t *testing.T) {
+\tstate := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
+\twriter := &recordingPacketWriter{}
+\tfly := NewChunkFlyAction(state, writer, 90)
+\tif err := fly.Start(context.Background()); err != nil {
+\t\tt.Fatal(err)
+\t}
+\tstate.setFlyingConfirmed(true)
+\tcorrected := mgl32.Vec3{10, fly.targetY, 20}
+\tstate.correct(corrected, 0, 90, 90)
+
+\tinput := authInputPacket(state, 1)
+\tif input.Delta[0] >= 0 || input.Delta[1] != 0 {
+\t\tt.Fatalf("corrected horizontal flight delta = %v", input.Delta)
+\t}
+\tif input.Position[1] != corrected[1] || input.Position[0] >= corrected[0] {
+\t\tt.Fatalf("flight did not resume horizontally from correction: %v", input.Position)
+\t}
+\tif input.InputData.Load(packet.InputFlagAscend) || input.InputData.Load(packet.InputFlagWantUp) {
+\t\tt.Fatalf("horizontal correction recovery requested ascent: %+v", input.InputData)
+\t}
+\t_, _, corrections := state.telemetrySnapshot()
+\tif corrections != 1 {
+\t\tt.Fatalf("server corrections = %d, want 1", corrections)
+\t}
+}''')
+
+          insert_before = "func TestServerTickSyncDrivesNextAuthInputTick(t *testing.T) {"
+          descent = r'''func TestChunkFlyDescendsAfterAuthoritativeOvershoot(t *testing.T) {
+\tstate := newPlayerState(mgl32.Vec3{0, 64, 0}, 0, 0)
+\twriter := &recordingPacketWriter{}
+\tfly := NewChunkFlyAction(state, writer, 0)
+\tif err := fly.Start(context.Background()); err != nil {
+\t\tt.Fatal(err)
+\t}
+\tstate.setFlyingConfirmed(true)
+\tstate.correct(mgl32.Vec3{0, fly.targetY + 4, 0}, 0, 0, 0)
+
+\tinput := authInputPacket(state, 1)
+\tif !input.InputData.Load(packet.InputFlagDescend) || !input.InputData.Load(packet.InputFlagWantDown) {
+\t\tt.Fatalf("overshoot did not request descent: %+v", input.InputData)
+\t}
+\tif input.MoveVector != (mgl32.Vec2{}) || input.Delta[1] >= 0 || input.Delta[0] != 0 || input.Delta[2] != 0 {
+\t\tt.Fatalf("overshoot descent = move %v delta %v", input.MoveVector, input.Delta)
+\t}
+}
+
+'''
+          if insert_before not in text:
+              raise SystemExit("server tick test insertion target not found")
+          text = text.replace(insert_before, descent + insert_before, 1)
+          tests.write_text(text)
+          PY
+
+          gofmt -w internal/bot/tick.go internal/bot/flight_movement.go internal/bot/flight_test.go
+          go test ./...
+
+      - name: Commit patch to PR branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add internal/bot/tick.go internal/bot/flight_movement.go internal/bot/flight_test.go
+          git commit -m "fix: ascend before chunk traversal"
+          git push origin HEAD:feat/chunk-fly-scenario
