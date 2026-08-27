@@ -63,7 +63,11 @@ func (w authInputWriter) WritePacket(pk packet.Packet) error {
 	}
 	if input, ok := pk.(*packet.PlayerAuthInput); ok {
 		w.authCount.Add(1)
-		if input.MoveVector[0] != 0 || input.MoveVector[1] != 0 {
+		moving := input.MoveVector[0] != 0 || input.MoveVector[1] != 0 ||
+			input.Delta[0] != 0 || input.Delta[1] != 0 || input.Delta[2] != 0 ||
+			input.InputData.Load(packet.InputFlagAscend) || input.InputData.Load(packet.InputFlagDescend) ||
+			input.InputData.Load(packet.InputFlagWantUp) || input.InputData.Load(packet.InputFlagWantDown)
+		if moving {
 			w.movementCount.Add(1)
 		}
 		return nil
@@ -88,10 +92,18 @@ func runInstance(
 	var authInputs atomic.Uint64
 	var movementInputs atomic.Uint64
 	var actionPackets atomic.Uint64
+	var state *playerState
 	defer func() {
 		stats.AuthInputsSent = authInputs.Load()
 		stats.MovementInputsSent = movementInputs.Load()
 		stats.ActionPacketsSent = actionPackets.Load()
+		if state != nil {
+			position, flying, corrections := state.telemetrySnapshot()
+			stats.FinalPosition = position
+			stats.FlyingConfirmed = flying
+			stats.ServerCorrections = corrections
+			stats.HorizontalDistance = horizontalDistance(stats.StartPosition, position)
+		}
 	}()
 
 	if err := out.Emit("connecting", map[string]any{"address": address, "name": name}); err != nil {
@@ -159,9 +171,32 @@ func runInstance(
 	}
 
 	game := conn.GameData()
+	stats.StartPosition = game.PlayerPosition
 	if err := out.Emit("spawned", map[string]any{
 		"x": game.PlayerPosition[0], "y": game.PlayerPosition[1], "z": game.PlayerPosition[2],
 	}); err != nil {
+		return stageError(ExitRuntime, "output", err)
+	}
+
+	// BDS 1.26.44 requires the client loading-screen lifecycle to finish
+	// before movement input is accepted consistently. Match the current
+	// headless-client cadence rather than starting PlayerAuthInput immediately.
+	if err := conn.WritePacket(&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeStart}); err != nil {
+		return stageError(ExitRuntime, "loading-screen-start", err)
+	}
+	loadingTimer := time.NewTimer(140 * time.Millisecond)
+	select {
+	case <-ctx.Done():
+		if !loadingTimer.Stop() {
+			<-loadingTimer.C
+		}
+		return nil
+	case <-loadingTimer.C:
+	}
+	if err := conn.WritePacket(&packet.ServerBoundLoadingScreen{Type: packet.LoadingScreenTypeEnd}); err != nil {
+		return stageError(ExitRuntime, "loading-screen-end", err)
+	}
+	if err := out.Emit("client_prepared", map[string]any{"sequence": "loading-screen-140ms"}); err != nil {
 		return stageError(ExitRuntime, "output", err)
 	}
 
@@ -176,7 +211,7 @@ func runInstance(
 	}
 
 	headingYaw := scenarioHeading(game.Yaw, instanceIndex, cfg.Count)
-	state := newPlayerState(game.PlayerPosition, game.Pitch, game.Yaw)
+	state = newPlayerState(game.PlayerPosition, game.Pitch, game.Yaw)
 	tickCtx, cancelTick := context.WithCancel(ctx)
 	defer cancelTick()
 	tickErr := make(chan error, 1)
@@ -200,6 +235,14 @@ func runInstance(
 
 	chunkRadiusReady := false
 	onlineState := false
+	nextProgress := time.Now().Add(5 * time.Second)
+	var publisherUpdates uint64
+	var postMoveUpdates uint64
+	var postMoveX, postMoveY, postMoveZ float32
+	postMoveSet := false
+	var publisherX, publisherY, publisherZ int32
+	var publisherChunkX, publisherChunkZ int32
+	publisherSet := false
 	for {
 		pk, readErr := conn.ReadPacket()
 		if readErr != nil {
@@ -235,6 +278,7 @@ func runInstance(
 			}
 		case *packet.LevelChunk:
 			stats.ChunksReceived++
+			stats.recordChunk(p.Position[0], p.Position[1])
 			// Initial chunk streaming becomes very noisy for larger fleets. Keep
 			// representative evidence while retaining the exact per-bot counter.
 			if stats.ChunksReceived <= 3 || stats.ChunksReceived%100 == 0 {
@@ -244,13 +288,95 @@ func runInstance(
 					return stageError(ExitRuntime, "output", err)
 				}
 			}
+		case *packet.NetworkChunkPublisherUpdate:
+			publisherUpdates++
+			x, y, z := p.Position[0], p.Position[1], p.Position[2]
+			chunkX, chunkZ := x>>4, z>>4
+			samePublisher := publisherSet && x == publisherX && y == publisherY && z == publisherZ
+			changedChunk := !publisherSet || chunkX != publisherChunkX || chunkZ != publisherChunkZ
+			if (cfg.Scenario == ScenarioChunkWalk || cfg.Scenario == ScenarioChunkFly) && samePublisher {
+				// BDS currently sends an initial one-shot publisher at 0,0,0, then
+				// repeatedly publishes the real player block position. Two identical
+				// consecutive publisher positions give us server-owned spawn evidence
+				// without trusting StartGame's Y≈32768 placeholder. The publisher
+				// is a server-owned BlockPos and may differ in X/Z after BDS resolves
+				// the real spawn. Seed all axes from it: block centres for X/Z and
+				// eye height for the PlayerAuthInput Y coordinate.
+				candidate := publisherEyePosition(p.Position)
+				if state.acceptPublisherPosition(candidate) {
+					stats.StartPosition = candidate
+					if err := out.Emit("authoritative_position", map[string]any{
+						"position": []float32{candidate[0], candidate[1], candidate[2]},
+						"source":   "chunk_publisher",
+					}); err != nil {
+						return stageError(ExitRuntime, "output", err)
+					}
+				}
+			}
+			publisherX, publisherY, publisherZ = x, y, z
+			publisherChunkX, publisherChunkZ = chunkX, chunkZ
+			publisherSet = true
+			if cfg.Scenario == ScenarioChunkFly && changedChunk {
+				if err := out.Emit("chunk_publisher", map[string]any{
+					"x": x, "y": y, "z": z, "chunk_x": chunkX, "chunk_z": chunkZ,
+					"radius": p.Radius, "updates": publisherUpdates,
+				}); err != nil {
+					return stageError(ExitRuntime, "output", err)
+				}
+			}
+		case *packet.ServerPlayerPostMovePosition:
+			postMoveUpdates++
+			postMoveX, postMoveY, postMoveZ = p.Position[0], p.Position[1], p.Position[2]
+			postMoveSet = true
+			if cfg.Scenario == ScenarioChunkFly && (postMoveUpdates <= 3 || postMoveUpdates%100 == 0) {
+				if err := out.Emit("server_post_move", map[string]any{
+					"position": []float32{postMoveX, postMoveY, postMoveZ},
+					"updates":  postMoveUpdates,
+				}); err != nil {
+					return stageError(ExitRuntime, "output", err)
+				}
+			}
 		case *packet.MovePlayer:
 			if p.EntityRuntimeID == game.EntityRuntimeID {
 				state.update(p.Position, p.Pitch, p.Yaw, p.HeadYaw, p.Mode == packet.MoveModeTeleport)
+				state.syncServerTick(p.Tick)
 			}
 		case *packet.CorrectPlayerMovePrediction:
 			if p.PredictionType == packet.PredictionTypePlayer {
-				state.update(p.Position, p.Rotation[0], p.Rotation[1], p.Rotation[1], false)
+				state.correctPrediction(p.Position, p.Rotation[0], p.Rotation[1], p.Rotation[1], p.Tick)
+				state.syncServerTick(p.Tick)
+			}
+		case *packet.UpdateAttributes:
+			if p.EntityRuntimeID == game.EntityRuntimeID {
+				state.syncServerTick(p.Tick)
+			}
+		case *packet.SetActorData:
+			if p.EntityRuntimeID == game.EntityRuntimeID {
+				state.syncServerTick(p.Tick)
+			}
+		case *packet.SetActorMotion:
+			if p.EntityRuntimeID == game.EntityRuntimeID {
+				state.syncServerTick(p.Tick)
+			}
+		case *packet.MobEffect:
+			if p.EntityRuntimeID == game.EntityRuntimeID {
+				state.syncServerTick(p.Tick)
+			}
+		case *packet.UpdatePlayerGameType:
+			if p.PlayerUniqueID == game.EntityUniqueID {
+				state.syncServerTick(p.Tick)
+			}
+		case *packet.UpdateAbilities:
+			if cfg.Scenario == ScenarioChunkFly && (p.AbilityData.EntityUniqueID == game.EntityUniqueID || p.AbilityData.EntityUniqueID == 0) {
+				mayFly, flying := flightAbilityState(p.AbilityData)
+				if state.setFlyingConfirmed(flying) {
+					if err := out.Emit("flight_state", map[string]any{
+						"may_fly": mayFly,
+						"flying":  flying,
+					}); err != nil {
+						return stageError(ExitRuntime, "output", err)
+					}
+				}
 			}
 		}
 
@@ -279,6 +405,40 @@ func runInstance(
 				case <-ctx.Done():
 				}
 			}
+		}
+
+		if onlineState && (cfg.Scenario == ScenarioChunkWalk || cfg.Scenario == ScenarioChunkFly) && !time.Now().Before(nextProgress) {
+			position, flying, corrections := state.telemetrySnapshot()
+			nextInputTick, tickSynced := state.tickSnapshot()
+			positionReady := state.positionReadySnapshot()
+			spanX, spanZ := stats.chunkSpan()
+			fields := map[string]any{
+				"position":                 []float32{position[0], position[1], position[2]},
+				"position_ready":           positionReady,
+				"horizontal_distance":      horizontalDistance(stats.StartPosition, position),
+				"flying_confirmed":         flying,
+				"server_corrections":       corrections,
+				"chunks_received":          stats.ChunksReceived,
+				"chunk_span_x":             spanX,
+				"chunk_span_z":             spanZ,
+				"auth_inputs_sent":         authInputs.Load(),
+				"movement_inputs_sent":     movementInputs.Load(),
+				"next_input_tick":          nextInputTick,
+				"tick_synced":              tickSynced,
+				"publisher_updates":        publisherUpdates,
+				"server_post_move_updates": postMoveUpdates,
+			}
+			if postMoveSet {
+				fields["server_post_move_position"] = []float32{postMoveX, postMoveY, postMoveZ}
+			}
+			if publisherSet {
+				fields["publisher_position"] = []int32{publisherX, publisherY, publisherZ}
+				fields["publisher_chunk"] = []int32{publisherChunkX, publisherChunkZ}
+			}
+			if err := out.Emit("bot_progress", fields); err != nil {
+				return stageError(ExitRuntime, "output", err)
+			}
+			nextProgress = time.Now().Add(5 * time.Second)
 		}
 
 		select {

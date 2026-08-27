@@ -18,6 +18,8 @@ func newScenarioAction(cfg Config, state *playerState, heading float32, writer p
 	switch cfg.Scenario {
 	case ScenarioChunkWalk:
 		return NewMoveAction(state, mgl32.Vec2{0, 1}, chunkWalkStepPerTick, heading, 0), nil
+	case ScenarioChunkFly:
+		return NewChunkFlyAction(state, writer, heading), nil
 	case ScenarioIdle:
 		return NewIdleAction(state), nil
 	default:

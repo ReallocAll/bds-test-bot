@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ReallocAll/bds-test-bot/internal/output"
+	"github.com/go-gl/mathgl/mgl32"
 )
 
 type InstanceStats struct {
@@ -20,6 +21,45 @@ type InstanceStats struct {
 	AuthInputsSent     uint64
 	MovementInputsSent uint64
 	ActionPacketsSent  uint64
+
+	StartPosition      mgl32.Vec3
+	FinalPosition      mgl32.Vec3
+	HorizontalDistance float64
+	FlyingConfirmed    bool
+	ServerCorrections  uint64
+	ChunkBoundsSet     bool
+	ChunkMinX          int32
+	ChunkMaxX          int32
+	ChunkMinZ          int32
+	ChunkMaxZ          int32
+}
+
+func (s *InstanceStats) recordChunk(x, z int32) {
+	if !s.ChunkBoundsSet {
+		s.ChunkBoundsSet = true
+		s.ChunkMinX, s.ChunkMaxX = x, x
+		s.ChunkMinZ, s.ChunkMaxZ = z, z
+		return
+	}
+	if x < s.ChunkMinX {
+		s.ChunkMinX = x
+	}
+	if x > s.ChunkMaxX {
+		s.ChunkMaxX = x
+	}
+	if z < s.ChunkMinZ {
+		s.ChunkMinZ = z
+	}
+	if z > s.ChunkMaxZ {
+		s.ChunkMaxZ = z
+	}
+}
+
+func (s InstanceStats) chunkSpan() (int32, int32) {
+	if !s.ChunkBoundsSet {
+		return 0, 0
+	}
+	return s.ChunkMaxX - s.ChunkMinX + 1, s.ChunkMaxZ - s.ChunkMinZ + 1
 }
 
 type instanceResult struct {
@@ -89,7 +129,7 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 
 	recordOnline := func(stats InstanceStats) error {
 		onlineCount++
-		return out.Emit("fleet_progress", map[string]any{
+		fields := map[string]any{
 			"online":               onlineCount,
 			"count":                cfg.Count,
 			"bot":                  stats.Name,
@@ -98,7 +138,14 @@ func Run(ctx context.Context, cfg Config, out *output.Emitter) error {
 			"auth_inputs_sent":     stats.AuthInputsSent,
 			"movement_inputs_sent": stats.MovementInputsSent,
 			"action_packets_sent":  stats.ActionPacketsSent,
-		})
+		}
+		if stats.Scenario == ScenarioChunkFly {
+			spanX, spanZ := stats.chunkSpan()
+			fields["flying_confirmed"] = stats.FlyingConfirmed
+			fields["chunk_span_x"] = spanX
+			fields["chunk_span_z"] = spanZ
+		}
+		return out.Emit("fleet_progress", fields)
 	}
 
 	for i := 0; i < cfg.Count; i++ {
@@ -214,6 +261,9 @@ func finishFleet(
 	var authInputs uint64
 	var movementInputs uint64
 	var actionPackets uint64
+	var flyingConfirmed int
+	var serverCorrections uint64
+	minHorizontalDistance := -1.0
 	for _, result := range results {
 		stats := result.stats
 		packets += stats.PacketsReceived
@@ -231,6 +281,23 @@ func finishFleet(
 			"auth_inputs_sent":     stats.AuthInputsSent,
 			"movement_inputs_sent": stats.MovementInputsSent,
 			"action_packets_sent":  stats.ActionPacketsSent,
+		}
+		if stats.Scenario == ScenarioChunkFly {
+			spanX, spanZ := stats.chunkSpan()
+			fields["start_position"] = []float32{stats.StartPosition[0], stats.StartPosition[1], stats.StartPosition[2]}
+			fields["final_position"] = []float32{stats.FinalPosition[0], stats.FinalPosition[1], stats.FinalPosition[2]}
+			fields["horizontal_distance"] = stats.HorizontalDistance
+			fields["flying_confirmed"] = stats.FlyingConfirmed
+			fields["server_corrections"] = stats.ServerCorrections
+			fields["chunk_span_x"] = spanX
+			fields["chunk_span_z"] = spanZ
+			serverCorrections += stats.ServerCorrections
+			if stats.FlyingConfirmed {
+				flyingConfirmed++
+			}
+			if minHorizontalDistance < 0 || stats.HorizontalDistance < minHorizontalDistance {
+				minHorizontalDistance = stats.HorizontalDistance
+			}
 		}
 		if !stats.EndedAt.IsZero() {
 			fields["uptime"] = stats.EndedAt.Sub(stats.StartedAt).Round(time.Millisecond).String()
@@ -259,6 +326,11 @@ func finishFleet(
 		"movement_inputs_sent": movementInputs,
 		"action_packets_sent":  actionPackets,
 		"graceful_shutdown":    firstErr == nil,
+	}
+	if len(results) > 0 && results[0].stats.Scenario == ScenarioChunkFly {
+		fields["flying_confirmed"] = flyingConfirmed
+		fields["server_corrections"] = serverCorrections
+		fields["min_horizontal_distance"] = minHorizontalDistance
 	}
 	if firstErr != nil {
 		fields["error"] = firstErr.Error()
